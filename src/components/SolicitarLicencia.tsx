@@ -541,13 +541,13 @@ export const SolicitarLicencia: React.FC<SolicitarLicenciaProps> = ({
               <div className="flex items-center justify-between">
                 <label className="text-sm font-bold text-slate-900 flex items-center gap-1.5">
                   <Briefcase className="w-4 h-4 text-blue-600" />
-                  <span>Puesto(s) a los que aplica la licencia <span className="text-red-500">*</span></span>
+                  <span>Solicitar licencia en: <span className="text-red-500">*</span></span>
                 </label>
               </div>
 
               {assignedPosts.length === 0 ? (
                 <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-xs sm:text-sm">
-                  El agente no posee cargos asignados actualmente por el administrador.
+                  El agente no posee cargos asignados, contactarse con secretaria.
                 </div>
               ) : (
                 <div className="space-y-2.5">
@@ -562,7 +562,7 @@ export const SolicitarLicencia: React.FC<SolicitarLicenciaProps> = ({
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      Puesto(s) específico(s) ({selectedPostIds.length})
+                      Seleccionar puestos ({selectedPostIds.length})
                     </button>
                     <button
                       type="button"
