@@ -33,20 +33,11 @@ import {
   Clock,
   Copy
 } from 'lucide-react';
-import { User } from 'firebase/auth';
 import { LicenseRequest } from '../../types';
 import { dataService, formatDMY, formatDateTimeDMY, calculateDaysBetween } from '../../services/dataService';
 import { authService } from '../../services/authService';
 import {
-  connectGoogleAdminDrive,
-  disconnectGoogleAdminDrive,
-  isGoogleDriveConnected,
-  getGoogleDriveUserEmail,
-  subscribeToDriveAuth,
-  syncAllPendingToDrive,
-  uploadFileToDrive,
   listFilesInDriveFolder,
-  processFileForUpload,
   getDriveThumbnailUrl,
   getDrivePreviewUrl,
   getDriveDownloadUrl,
@@ -54,7 +45,6 @@ import {
   FOLDER_CONSTANCIAS_ID,
   DriveFileItem
 } from '../../services/googleDriveService';
-import { driveSyncCronService, DriveSyncCronStatus } from '../../services/driveSyncCronService';
 
 export const SuperadminArchivosModule: React.FC = () => {
   const [requestsWithFiles, setRequestsWithFiles] = useState<LicenseRequest[]>(() => 
@@ -76,46 +66,14 @@ export const SuperadminArchivosModule: React.FC = () => {
   const [deleteMode, setDeleteMode] = useState<'FILE_ONLY' | 'WHOLE_REQUEST'>('FILE_ONLY');
   const [deleteReason, setDeleteReason] = useState('Limpieza periódica / archivo no válido');
   const [feedbackMsg, setFeedbackMsg] = useState<{ type: 'success' | 'info' | 'error'; text: string } | null>(null);
-  const [unauthorizedDomain, setUnauthorizedDomain] = useState<string | null>(null);
-  const [copiedDomain, setCopiedDomain] = useState(false);
 
-  // Google Drive state
-  const [driveConnected, setDriveConnected] = useState<boolean>(() => isGoogleDriveConnected());
-  const [driveUserEmail, setDriveUserEmail] = useState<string | null>(() => getGoogleDriveUserEmail());
-  const [isConnectingDrive, setIsConnectingDrive] = useState(false);
-  const [isSyncingDrive, setIsSyncingDrive] = useState(false);
-  const [syncProgressMsg, setSyncProgressMsg] = useState<string | null>(null);
-  
   // Real-time Drive folder explorer modal
   const [driveExplorerOpen, setDriveExplorerOpen] = useState(false);
   const [explorerFolderType, setExplorerFolderType] = useState<'FIRMAS' | 'CONSTANCIAS'>('FIRMAS');
   const [driveLiveFiles, setDriveLiveFiles] = useState<DriveFileItem[]>([]);
   const [isLoadingLiveFiles, setIsLoadingLiveFiles] = useState(false);
 
-  // 1-Hour Automated Drive Sync Cron Status
-  const [cronStatus, setCronStatus] = useState<DriveSyncCronStatus>(() => driveSyncCronService.getStatus());
-
   const currentUser = authService.getCurrentUser();
-
-  // Subscribe to drive auth changes
-  useEffect(() => {
-    const unsub = subscribeToDriveAuth((connected, userEmail) => {
-      setDriveConnected(connected);
-      setDriveUserEmail(userEmail);
-    });
-    return unsub;
-  }, []);
-
-  // Subscribe to 1-Hour Cron Status updates
-  useEffect(() => {
-    const unsubCron = driveSyncCronService.subscribe((status) => {
-      setCronStatus(status);
-      if (status.status === 'success') {
-        reloadData();
-      }
-    });
-    return unsubCron;
-  }, []);
 
   const reloadData = () => {
     const list = dataService.getRequestsWithJustifications();
@@ -129,138 +87,6 @@ export const SuperadminArchivosModule: React.FC = () => {
       });
       return next;
     });
-  };
-
-  // Google Drive connect
-  const handleConnectDrive = async () => {
-    setIsConnectingDrive(true);
-    setUnauthorizedDomain(null);
-    try {
-      const res = await connectGoogleAdminDrive();
-      setFeedbackMsg({
-        type: 'success',
-        text: `Google Drive institucional conectado con éxito (${res.user.email || 'cpem25oficial@gmail.com'}). Ya puede sincronizar y ver los archivos en las carpetas.`,
-      });
-    } catch (err: any) {
-      if (err?.code === 'auth/unauthorized-domain' || err?.message?.includes('unauthorized-domain')) {
-        const currentHost = typeof window !== 'undefined' ? window.location.hostname : 'Netlify';
-        setUnauthorizedDomain(currentHost);
-      }
-      setFeedbackMsg({
-        type: 'error',
-        text: `No se pudo conectar Google Drive: ${err.message || 'Error de autenticación'}`,
-      });
-    } finally {
-      setIsConnectingDrive(false);
-    }
-  };
-
-  // Google Drive disconnect
-  const handleDisconnectDrive = async () => {
-    await disconnectGoogleAdminDrive();
-    setFeedbackMsg({
-      type: 'info',
-      text: 'Sesión de Google Drive cerrada.',
-    });
-  };
-
-  // Google Drive sync all
-  const handleSyncAllToDrive = async () => {
-    if (!driveConnected) {
-      setFeedbackMsg({
-        type: 'error',
-        text: 'Debe conectar Google Drive antes de iniciar la sincronización.',
-      });
-      return;
-    }
-
-    setIsSyncingDrive(true);
-    setSyncProgressMsg('Iniciando sincronización con Google Drive...');
-
-    try {
-      const allRequests = dataService.getRequests();
-      const res = await syncAllPendingToDrive(allRequests, (msg) => {
-        setSyncProgressMsg(msg);
-      });
-
-      reloadData();
-      setFeedbackMsg({
-        type: 'success',
-        text: `¡Sincronización finalizada! Se subieron ${res.signaturesUploaded} firma(s) a la Carpeta de Firmas y ${res.justificationsUploaded} comprobante(s) a la Carpeta de Constancias en Google Drive.${
-          res.errors.length > 0 ? ` (${res.errors.length} notas)` : ''
-        }`,
-      });
-    } catch (err: any) {
-      setFeedbackMsg({
-        type: 'error',
-        text: `Error durante la sincronización: ${err.message || 'Error de red'}`,
-      });
-    } finally {
-      setIsSyncingDrive(false);
-      setSyncProgressMsg(null);
-    }
-  };
-
-  // Single file manual upload to Drive
-  const handleUploadSingleToDrive = async (req: LicenseRequest) => {
-    if (!driveConnected) {
-      setFeedbackMsg({
-        type: 'error',
-        text: 'Conecte primero Google Drive para subir el archivo.',
-      });
-      return;
-    }
-
-    try {
-      const updates: Partial<LicenseRequest> = {};
-      
-      // Upload signature if needed
-      if (req.signatureDataUrl && req.signatureDataUrl.startsWith('data:') && !req.signatureDriveUrl) {
-        const sigRes = await uploadFileToDrive({
-          name: `${req.agentDni || req.employeeNumber}_${req.id}.png`,
-          dataUrl: req.signatureDataUrl,
-          folderId: FOLDER_FIRMAS_ID,
-        });
-        if (sigRes) {
-          updates.signatureDriveUrl = sigRes.webViewLink;
-          updates.signatureDriveFileId = sigRes.fileId;
-        }
-      }
-
-      // Upload justification if needed
-      if (req.justificationDataUrl && req.justificationDataUrl.startsWith('data:') && !req.justificationDriveUrl) {
-        const processed = await processFileForUpload({
-          dataUrl: req.justificationDataUrl,
-          name: req.justificationName || 'comprobante.jpg',
-        });
-        const justRes = await uploadFileToDrive({
-          name: `${req.agentDni || req.employeeNumber}_${req.id}_${processed.name}`,
-          dataUrl: processed.dataUrl,
-          folderId: FOLDER_CONSTANCIAS_ID,
-        });
-        if (justRes) {
-          updates.justificationDriveUrl = justRes.webViewLink;
-          updates.justificationDriveFileId = justRes.fileId;
-        }
-      }
-
-      if (Object.keys(updates).length > 0) {
-        dataService.updateLicenseRequest(req.id, updates);
-        reloadData();
-        if (viewingFileReq?.id === req.id) {
-          setViewingFileReq({ ...viewingFileReq, ...updates });
-        }
-        setFeedbackMsg({
-          type: 'success',
-          text: `El archivo y firma de la solicitud ${req.id} se subieron correctamente a Google Drive.`,
-        });
-      }
-    } catch (err: any) {
-      setFeedbackMsg({
-        type: 'error',
-        text: `Error al subir a Google Drive: ${err.message}`,
-      });
-    }
   };
 
   // Open live folder explorer
@@ -546,30 +372,28 @@ export const SuperadminArchivosModule: React.FC = () => {
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            <a
-              href={`https://drive.google.com/drive/folders/${FOLDER_FIRMAS_ID}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-semibold transition-colors"
-              title="Abrir carpeta oficial de firmas en Google Drive"
+            <button
+              type="button"
+              onClick={() => handleOpenLiveFolder('FIRMAS')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-blue-600/30 hover:bg-blue-600/50 text-blue-200 border border-blue-500/40 text-xs font-semibold transition-colors cursor-pointer"
+              title="Ver archivos en carpeta oficial de firmas en Google Drive"
             >
+              <FolderOpen className="w-3.5 h-3.5" />
               <span>📁 Carpeta Firmas</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            </a>
-            <a
-              href={`https://drive.google.com/drive/folders/${FOLDER_CONSTANCIAS_ID}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 text-xs font-semibold transition-colors"
-              title="Abrir carpeta oficial de constancias en Google Drive"
+            </button>
+            <button
+              type="button"
+              onClick={() => handleOpenLiveFolder('CONSTANCIAS')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 text-xs font-semibold transition-colors cursor-pointer"
+              title="Ver archivos en carpeta oficial de constancias en Google Drive"
             >
+              <FolderOpen className="w-3.5 h-3.5" />
               <span>📁 Carpeta Constancias</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
-            </a>
+            </button>
 
             <button
               onClick={reloadData}
-              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs transition-colors border border-white/10 shadow-xs"
+              className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white font-bold text-xs transition-colors border border-white/10 shadow-xs cursor-pointer"
               title="Refrescar lista de archivos"
             >
               <RefreshCw className="w-4 h-4" />
@@ -621,227 +445,6 @@ export const SuperadminArchivosModule: React.FC = () => {
         </div>
       </div>
 
-      {/* GOOGLE DRIVE INTEGRATION & SYNC CARD (Key Component) */}
-      <div className="bg-white rounded-3xl border border-slate-200/90 shadow-md p-5 sm:p-6 space-y-4">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2.5">
-              <div className="w-9 h-9 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center shrink-0">
-                <Cloud className="w-5 h-5 text-blue-600" />
-              </div>
-              <div>
-                <h2 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                  <span>Conexión con Google Drive Institucional</span>
-                  {driveConnected ? (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
-                      <Check className="w-3 h-3 text-emerald-600" />
-                      Conectado
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
-                      <AlertCircle className="w-3 h-3 text-amber-600" />
-                      No Conectado
-                    </span>
-                  )}
-                </h2>
-                <p className="text-xs text-slate-500">
-                  {driveConnected
-                    ? `Autorizado como ${driveUserEmail || 'cpem25oficial@gmail.com'}. Los archivos se sincronizan directamente con las carpetas institucionales.`
-                    : 'Para que las firmas y constancias se alojen directamente en Google Drive, conecte la cuenta institucional de CPEM 25.'}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* Action Buttons */}
-          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-            {!driveConnected ? (
-              <button
-                type="button"
-                onClick={handleConnectDrive}
-                disabled={isConnectingDrive}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 font-bold text-xs border border-slate-300 shadow-sm transition-all hover:scale-102 cursor-pointer"
-                title="Iniciar sesión con Google para autorizar la subida a Drive"
-              >
-                {/* Official Google 'G' Icon */}
-                <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
-                  <path
-                    fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
-                  />
-                  <path
-                    fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
-                  />
-                  <path
-                    fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"
-                  />
-                  <path
-                    fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
-                  />
-                </svg>
-                <span>{isConnectingDrive ? 'Conectando...' : 'Conectar con Google Drive'}</span>
-              </button>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  onClick={handleSyncAllToDrive}
-                  disabled={isSyncingDrive}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-md transition-all hover:scale-102 cursor-pointer"
-                  title="Subir todas las firmas y constancias pendientes a Google Drive"
-                >
-                  <CloudUpload className={`w-4 h-4 ${isSyncingDrive ? 'animate-bounce' : ''}`} />
-                  <span>
-                    {isSyncingDrive
-                      ? 'Sincronizando...'
-                      : `Sincronizar a Drive (${stats.totalPending} pendientes)`}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleOpenLiveFolder('FIRMAS')}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs border border-slate-300/80 transition-colors"
-                  title="Ver los archivos que existen actualmente en la carpeta de Firmas de Google Drive"
-                >
-                  <FolderOpen className="w-3.5 h-3.5 text-blue-600" />
-                  <span>Ver Firmas en Drive</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleOpenLiveFolder('CONSTANCIAS')}
-                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs border border-slate-300/80 transition-colors"
-                  title="Ver los archivos que existen actualmente en la carpeta de Constancias de Google Drive"
-                >
-                  <FolderOpen className="w-3.5 h-3.5 text-indigo-600" />
-                  <span>Ver Constancias en Drive</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDisconnectDrive}
-                  className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors"
-                  title="Cerrar sesión de Google Drive"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {/* Live sync progress alert */}
-        {isSyncingDrive && syncProgressMsg && (
-          <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl flex items-center gap-3 text-xs text-blue-900 animate-pulse">
-            <RefreshCw className="w-4 h-4 text-blue-600 animate-spin shrink-0" />
-            <span className="font-medium">{syncProgressMsg}</span>
-          </div>
-        )}
-
-        {/* AUTOMATIC 1-HOUR CRON STATUS BAR */}
-        <div className="bg-slate-50/80 rounded-2xl p-4 border border-slate-200/90 space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl bg-indigo-100 text-indigo-700 flex items-center justify-center shrink-0">
-                <Clock className="w-5 h-5 text-indigo-600" />
-              </div>
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-bold text-xs sm:text-sm text-slate-900">
-                    Cron de Sincronización Automática a Drive
-                  </span>
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
-                    ⏱ Cada 1 Hora
-                  </span>
-                  {cronStatus.status === 'running' && (
-                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-100 text-blue-800 animate-pulse border border-blue-200">
-                      <RefreshCw className="w-3 h-3 animate-spin text-blue-600" />
-                      Sincronizando archivos...
-                    </span>
-                  )}
-                  {driveConnected && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                      Activo sin pedir acceso
-                    </span>
-                  )}
-                </div>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  El cron institucional examina y transfiere automáticamente firmas y comprobantes a las carpetas de Google Drive cada 60 minutos sin requerir acción ni login de los agentes.
-                </p>
-              </div>
-            </div>
-
-            <button
-              type="button"
-              onClick={async () => {
-                setIsSyncingDrive(true);
-                await driveSyncCronService.runSyncTask('MANUAL');
-                reloadData();
-                setIsSyncingDrive(false);
-              }}
-              disabled={isSyncingDrive || !driveConnected}
-              className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs border border-slate-300 shadow-2xs transition-colors shrink-0 disabled:opacity-50 cursor-pointer"
-              title="Disparar la tarea del cron manualmente ahora"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${cronStatus.status === 'running' ? 'animate-spin text-indigo-600' : ''}`} />
-              <span>Ejecutar Cron Ahora</span>
-            </button>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-slate-200 text-xs">
-            <div>
-              <span className="text-[10px] text-slate-400 block font-medium">Última ejecución:</span>
-              <span className="font-mono font-bold text-slate-700">
-                {cronStatus.lastSyncDate
-                  ? new Date(cronStatus.lastSyncDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : 'Programada'}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] text-slate-400 block font-medium">Próxima ejecución:</span>
-              <span className="font-mono font-bold text-indigo-600">
-                {cronStatus.nextSyncTimestamp
-                  ? new Date(cronStatus.nextSyncTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  : 'En 1 hora'}
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] text-slate-400 block font-medium">Última tanda transferida:</span>
-              <span className="font-bold text-slate-700">
-                {cronStatus.lastSignaturesUploaded} firmas / {cronStatus.lastJustificationsUploaded} constancias
-              </span>
-            </div>
-            <div>
-              <span className="text-[10px] text-slate-400 block font-medium">Modo de ejecución:</span>
-              <span className="font-bold text-slate-700">
-                Automático en segundo plano
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Informative explanation banner */}
-        {!driveConnected && (
-          <div className="p-4 bg-amber-50/80 rounded-2xl border border-amber-200/90 text-xs text-amber-900 space-y-1.5">
-            <div className="flex items-center gap-2 font-bold text-amber-950">
-              <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>¿Por qué no ve archivos en Google Drive todavía?</span>
-            </div>
-            <p className="leading-relaxed text-amber-800">
-              Por requerimiento del circuito administrativo, los agentes docentes solicitan licencias ingresando únicamente con su <strong>DNI y Legajo</strong> (sin requerir que inicien sesión con cuentas personales de Google). Por eso, las firmas y constancias se resguardan de forma segura en la base de datos de la escuela.
-            </p>
-            <p className="leading-relaxed text-amber-800">
-              Para que esos archivos se trasladen a las carpetas institucionales de Google Drive (<code className="bg-amber-100 px-1 py-0.5 rounded font-mono text-[11px]">1fK_xLbkg...</code> y <code className="bg-amber-100 px-1 py-0.5 rounded font-mono text-[11px]">1WXKwj...</code>), el administrador debe pulsar en <strong>"Conectar con Google Drive"</strong> arriba. Una vez conectado, podrá pulsar <strong>"Sincronizar a Drive"</strong> y todos los archivos acumulados se subirán de forma automática.
-            </p>
-          </div>
-        )}
-      </div>
-
       {/* FEEDBACK BANNER */}
       {feedbackMsg && (
         <div
@@ -865,66 +468,6 @@ export const SuperadminArchivosModule: React.FC = () => {
           >
             <X className="w-4 h-4" />
           </button>
-        </div>
-      )}
-
-      {/* UNAUTHORIZED DOMAIN HELP GUIDE */}
-      {unauthorizedDomain && (
-        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 sm:p-5 text-amber-950 space-y-3.5 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex items-center gap-2">
-              <span className="p-1.5 rounded-lg bg-amber-200/80 text-amber-800">
-                <Lock className="w-5 h-5" />
-              </span>
-              <div>
-                <h4 className="font-bold text-sm sm:text-base text-amber-900">
-                  Dominio no autorizado en Firebase Authentication
-                </h4>
-                <p className="text-xs text-amber-800">
-                  Por seguridad, Firebase Authentication bloquea ventanas emergentes (popups) de Google en dominios nuevos que no estén registrados en la lista de dominios autorizados.
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={() => setUnauthorizedDomain(null)}
-              className="text-amber-500 hover:text-amber-800 p-1 cursor-pointer"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="bg-white/90 rounded-xl p-3 border border-amber-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            <div>
-              <span className="text-[11px] uppercase tracking-wider font-bold text-slate-500 block">Tu dominio de Netlify:</span>
-              <code className="text-sm font-mono font-bold text-slate-800 select-all">{unauthorizedDomain}</code>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard.writeText(unauthorizedDomain);
-                setCopiedDomain(true);
-                setTimeout(() => setCopiedDomain(false), 3000);
-              }}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-sm transition-all cursor-pointer"
-            >
-              {copiedDomain ? <Check className="w-3.5 h-3.5 text-white" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>{copiedDomain ? '¡Dominio copiado!' : 'Copiar dominio'}</span>
-            </button>
-          </div>
-
-          <div className="space-y-2 text-xs text-amber-900 leading-relaxed">
-            <p className="font-bold">Cómo autorizar este dominio en 1 minuto en Firebase Console:</p>
-            <ol className="list-decimal pl-5 space-y-1">
-              <li>Ingresa a la <a href="https://console.firebase.google.com/" target="_blank" rel="noopener noreferrer" className="underline font-bold text-blue-700 inline-flex items-center gap-1">Consola de Firebase <ExternalLink className="w-3 h-3" /></a> y selecciona tu proyecto.</li>
-              <li>En el menú lateral izquierdo, ve a <strong>Build &gt; Authentication</strong> (o <strong>Compilación &gt; Authentication</strong>).</li>
-              <li>Abre la pestaña <strong>Settings</strong> (Configuración) y haz clic en <strong>Authorized domains</strong> (Dominios autorizados).</li>
-              <li>Haz clic en <strong>Add domain</strong> (Agregar dominio), pega <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-amber-200">{unauthorizedDomain}</code> y guarda.</li>
-            </ol>
-          </div>
-
-          <div className="p-3 bg-amber-100/80 border border-amber-300 rounded-xl text-xs text-amber-900">
-            <strong>💡 Solución instantánea sin tocar Firebase:</strong> Como la autorización de Google Drive se almacena en la base de datos Firestore, abre el proyecto en tu PC local (<code className="font-mono bg-white px-1 py-0.5 rounded">http://localhost:3000</code>) o aquí en AI Studio y haz clic en <strong>Conectar Google Drive</strong> una sola vez con la cuenta <code className="font-mono bg-white px-1 py-0.5 rounded">cpem25oficial@gmail.com</code>. Al guardarse en la nube, ¡tu sitio en Netlify se conectará inmediatamente de forma automática!
-          </div>
         </div>
       )}
 
@@ -1303,18 +846,6 @@ export const SuperadminArchivosModule: React.FC = () => {
                             <Eye className="w-4 h-4" />
                           </button>
 
-                          {/* Subir a Drive individual */}
-                          {(!hasDriveJust || !hasDriveSig) && driveConnected && (
-                            <button
-                              type="button"
-                              onClick={() => handleUploadSingleToDrive(req)}
-                              className="p-1.5 text-blue-600 hover:text-blue-800 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
-                              title="Subir este archivo y firma a Google Drive ahora"
-                            >
-                              <CloudUpload className="w-4 h-4" />
-                            </button>
-                          )}
-
                           {/* Abrir en Drive si existe */}
                           {req.justificationDriveUrl && (
                             <a
@@ -1435,7 +966,7 @@ export const SuperadminArchivosModule: React.FC = () => {
                   <Cloud className="w-8 h-8 text-slate-300" />
                   <p className="text-xs font-bold text-slate-600">Esta carpeta no contiene archivos subidos todavía</p>
                   <p className="text-[11px] text-slate-400 max-w-sm">
-                    Utilice el botón "Sincronizar a Drive" arriba para subir todas las firmas o constancias acumuladas.
+                    Los archivos se suben automáticamente en cuanto los agentes envían una solicitud o comprobante.
                   </p>
                 </div>
               ) : (
@@ -1617,7 +1148,7 @@ export const SuperadminArchivosModule: React.FC = () => {
               </div>
 
               <div className="flex items-center gap-2 shrink-0">
-                {viewingFileReq.justificationDriveUrl ? (
+                {viewingFileReq.justificationDriveUrl && (
                   <a
                     href={viewingFileReq.justificationDriveUrl}
                     target="_blank"
@@ -1627,17 +1158,6 @@ export const SuperadminArchivosModule: React.FC = () => {
                     <ExternalLink className="w-3.5 h-3.5" />
                     <span>Ver en Drive ↗</span>
                   </a>
-                ) : (
-                  driveConnected && (
-                    <button
-                      type="button"
-                      onClick={() => handleUploadSingleToDrive(viewingFileReq)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs shadow-xs transition-colors cursor-pointer"
-                    >
-                      <CloudUpload className="w-3.5 h-3.5" />
-                      <span>Subir a Drive</span>
-                    </button>
-                  )
                 )}
 
                 {(viewingFileReq.justificationDataUrl || viewingFileReq.justificationDriveFileId) && (

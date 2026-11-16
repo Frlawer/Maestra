@@ -28,7 +28,6 @@ import {
 } from 'lucide-react';
 import { authService } from '../../services/authService';
 import { SystemUser, LicenseRequest } from '../../types';
-import { isGoogleDriveConnected, subscribeToDriveAuth, connectGoogleAdminDrive } from '../../services/googleDriveService';
 import { AdminDashboard } from './AdminDashboard';
 import { AgentesModule } from './AgentesModule';
 import { CargosPuestosModule } from './CargosPuestosModule';
@@ -70,25 +69,6 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
   // Auto-hide panel: starts in icon-only mode to maximize screen space
   const [isPinned, setIsPinned] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
-
-  // Google Drive session state
-  const [driveConnected, setDriveConnected] = useState<boolean>(() => isGoogleDriveConnected());
-
-  useEffect(() => {
-    return subscribeToDriveAuth((connected) => {
-      setDriveConnected(connected);
-    });
-  }, []);
-
-  const handleQuickConnectDrive = async () => {
-    try {
-      await connectGoogleAdminDrive();
-    } catch (e: any) {
-      console.warn('Error connecting drive:', e);
-      // Cambiar a la pestaña de archivos donde se muestra el panel de ayuda detallado
-      setActiveTab('archivos');
-    }
-  };
 
   const currentUser = authService.getCurrentUser();
   const isSuperadmin = authService.isSuperadmin();
@@ -513,24 +493,6 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
           </div>
 
           <div className="flex items-center gap-3">
-            {/* Google Drive Status Indicator */}
-            {driveConnected ? (
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-300">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Google Drive Conectado</span>
-              </span>
-            ) : (
-              <button
-                type="button"
-                onClick={handleQuickConnectDrive}
-                className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 transition-colors cursor-pointer"
-                title="Conectar cuenta institucional de Google Drive"
-              >
-                <Cloud className="w-3.5 h-3.5 text-amber-600" />
-                <span>Conectar Google Drive</span>
-              </button>
-            )}
-
             <button
               onClick={onSwitchToPublicPortal}
               className="inline-flex items-center gap-1.5 text-xs font-semibold text-blue-600 hover:text-blue-800 transition-colors"

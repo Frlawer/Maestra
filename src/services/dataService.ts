@@ -10,6 +10,7 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { supabase } from './supabaseClient';
+import { authService } from './authService';
 import { 
   Agent, 
   Cargo, 
@@ -535,32 +536,65 @@ class DataService {
     return [];
   }
 
+  private safeSetLocalStorage(key: string, value: string) {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(key, value);
+    } catch (err) {
+      // Si se excede la cuota de localStorage (~5MB), purgar cachés pesados heredados para evitar bloqueos
+      try {
+        localStorage.removeItem(STORAGE_SISO_LICENSES);
+        localStorage.removeItem(STORAGE_REQUESTS);
+        localStorage.removeItem(STORAGE_AUDIT_LOGS);
+        localStorage.removeItem(STORAGE_AGENTS);
+        localStorage.removeItem(STORAGE_CARGOS);
+        localStorage.removeItem(STORAGE_PUESTOS);
+        localStorage.removeItem(STORAGE_PUESTOS_CARGOS);
+        localStorage.setItem(key, value);
+      } catch {
+        // La aplicación opera directamente contra Supabase; ignorar fallos de caché local
+        console.warn(`Aviso de caché local (${key}): cuota excedida, operando directo con Supabase.`);
+      }
+    }
+  }
+
   private saveAgents() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_AGENTS, JSON.stringify(this.agents));
+    this.safeSetLocalStorage(STORAGE_AGENTS, JSON.stringify(this.agents));
   }
   private saveCargos() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_CARGOS, JSON.stringify(this.cargos));
+    this.safeSetLocalStorage(STORAGE_CARGOS, JSON.stringify(this.cargos));
   }
   private savePuestos() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_PUESTOS, JSON.stringify(this.puestos));
+    this.safeSetLocalStorage(STORAGE_PUESTOS, JSON.stringify(this.puestos));
   }
   private savePuestosCargos() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_PUESTOS_CARGOS, JSON.stringify(this.puestosCargos));
+    this.safeSetLocalStorage(STORAGE_PUESTOS_CARGOS, JSON.stringify(this.puestosCargos));
   }
   private saveLicenseTypes() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_TYPES, JSON.stringify(this.licenseTypes));
+    this.safeSetLocalStorage(STORAGE_TYPES, JSON.stringify(this.licenseTypes));
   }
   private saveRequests() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_REQUESTS, JSON.stringify(this.requests));
+    // Nunca persistir archivos/firmas en base64 ("data:...") dentro de localStorage para no exceder la cuota de 5MB
+    const lightweightRequests = this.requests.map((r) => ({
+      ...r,
+      signatureDataUrl: r.signatureDataUrl && r.signatureDataUrl.startsWith('data:') ? '' : r.signatureDataUrl,
+      justificationDataUrl:
+        r.justificationDataUrl && r.justificationDataUrl.startsWith('data:') ? undefined : r.justificationDataUrl,
+    }));
+    this.safeSetLocalStorage(STORAGE_REQUESTS, JSON.stringify(lightweightRequests));
   }
   private saveSisoLicenses() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_SISO_LICENSES, JSON.stringify(this.sisoLicenses));
+    if (this.sisoLicenses.length > 500) {
+      if (typeof localStorage !== 'undefined') localStorage.removeItem(STORAGE_SISO_LICENSES);
+      return;
+    }
+    this.safeSetLocalStorage(STORAGE_SISO_LICENSES, JSON.stringify(this.sisoLicenses));
   }
   private saveSisoImports() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_SISO_IMPORTS, JSON.stringify(this.sisoImports));
+    this.safeSetLocalStorage(STORAGE_SISO_IMPORTS, JSON.stringify(this.sisoImports));
   }
   private saveAuditLogs() {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(STORAGE_AUDIT_LOGS, JSON.stringify(this.auditLogs));
+    this.safeSetLocalStorage(STORAGE_AUDIT_LOGS, JSON.stringify(this.auditLogs.slice(0, 200)));
   }
 
   public async initialize(force = false): Promise<void> {
@@ -836,9 +870,20 @@ class DataService {
         .order('solicitud_licencia_id', { ascending: false });
 
       if (dbReqs) {
+        const extractDriveId = (url?: string | null): string | undefined => {
+          if (!url || !url.includes('drive.google.com')) return undefined;
+          const m = url.match(/\/d\/([a-zA-Z0-9_-]+)/) || url.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+          return m?.[1];
+        };
+
         this.requests = dbReqs.map((row: any): LicenseRequest => {
           const agent = this.agents.find((a) => a.agente_id === row.agente_id);
           const type = this.licenseTypes.find((t) => t.tipo_licencia_id === row.tipo_licencia_id);
+          const sigUrl: string = row.signature_data_url || '';
+          const justUrl: string | undefined = row.justificacion_url || undefined;
+          const sigDriveId = extractDriveId(sigUrl);
+          const justDriveId = extractDriveId(justUrl);
+
           return {
             id: row.codigo || `SOL-2026-${String(row.solicitud_licencia_id).padStart(3, '0')}`,
             employeeNumber: String(agent?.legajo || agent?.employeeNumber || ''),
@@ -854,8 +899,13 @@ class DataService {
             licenseTypeName: type?.name || '',
             note: row.detalle_solicitud || undefined,
             detail: row.detalle_solicitud || undefined,
-            justificationDataUrl: row.justificacion_url || undefined,
-            signatureDataUrl: row.signature_data_url || '',
+            cantidadObligaciones: row.obligaciones || 1,
+            justificationDataUrl: justUrl,
+            justificationDriveUrl: justUrl && justUrl.includes('drive.google.com') ? justUrl : undefined,
+            justificationDriveFileId: justDriveId,
+            signatureDataUrl: sigUrl,
+            signatureDriveUrl: sigUrl && sigUrl.includes('drive.google.com') ? sigUrl : undefined,
+            signatureDriveFileId: sigDriveId,
             status: (row.estado as LicenseStatus) || 'Pendiente',
             createdAt: row.created_at || row.fecha_carga || new Date().toISOString(),
             source: 'Solicitud',
@@ -1785,7 +1835,7 @@ class DataService {
     return list;
   }
 
-  public createLicenseRequest(
+  public async createLicenseRequest(
     data: Omit<LicenseRequest, 'id' | 'createdAt' | 'status' | 'source' | 'historialEstados'> & { id?: string }
   ): Promise<LicenseRequest> {
     const codeId = data.id || ('SOL-' + new Date().getFullYear() + '-' + Math.floor(100 + Math.random() * 900));
@@ -1806,34 +1856,41 @@ class DataService {
       (a) => a.employeeNumber === newReq.employeeNumber || (newReq.agentDni && a.dni === newReq.agentDni)
     );
     const agIdNum = ag?.agente_id || 1;
-    const typeIdNum = newReq.licenseTypeId ? parseInt(newReq.licenseTypeId.replace(/\D/g, ''), 10) : 1;
+    const typeIdNum = newReq.licenseTypeId ? parseInt(newReq.licenseTypeId.replace(/\D/g, ''), 10) || 1 : 1;
+    const obligacionesNum =
+      newReq.cantidadObligaciones ||
+      parseInt(newReq.obligaciones || newReq.obligations || '1', 10) ||
+      1;
 
-    supabase
-      .from('solicitud_licencias')
-      .insert({
-        agente_id: agIdNum,
-        tipo_licencia_id: typeIdNum,
-        puestos_id: [newReq.postsSelection || '1'],
-        fecha_desde: newReq.dateFrom,
-        fecha_hasta: newReq.dateTo,
-        articulacion: newReq.isArticulation || false,
-        obligaciones: parseInt(newReq.obligaciones || '1', 10) || 1,
-        detalle_solicitud: newReq.note || newReq.detail || '',
-        codigo: newReq.id,
-        estado: 'Pendiente',
-        signature_data_url: newReq.signatureDataUrl || null,
-        justificacion_url: newReq.justificationDataUrl || null,
-        fecha_carga: newReq.createdAt,
-      })
-      .select()
-      .single()
-      .then(({ data: insData, error }) => {
-        if (insData && insData.codigo) {
-          newReq.id = insData.codigo;
-          this.saveRequests();
-        }
-        if (error) console.warn('Supabase insert solicitud_licencias notice:', error.message);
-      });
+    try {
+      const { data: insData, error } = await supabase
+        .from('solicitud_licencias')
+        .insert({
+          agente_id: agIdNum,
+          tipo_licencia_id: typeIdNum,
+          puestos_id: [newReq.postsSelection || '1'],
+          fecha_desde: newReq.dateFrom,
+          fecha_hasta: newReq.dateTo,
+          articulacion: newReq.isArticulation || false,
+          obligaciones: obligacionesNum,
+          detalle_solicitud: newReq.note || newReq.detail || '',
+          codigo: newReq.id,
+          estado: 'Pendiente',
+          signature_data_url: newReq.signatureDriveUrl || newReq.signatureDataUrl || null,
+          justificacion_url: newReq.justificationDriveUrl || newReq.justificationDataUrl || null,
+          fecha_carga: newReq.createdAt,
+        })
+        .select()
+        .single();
+
+      if (insData && insData.codigo) {
+        newReq.id = insData.codigo;
+        this.saveRequests();
+      }
+      if (error) console.warn('Supabase insert solicitud_licencias notice:', error.message);
+    } catch (err: any) {
+      console.warn('Supabase insert solicitud_licencias notice:', err?.message || err);
+    }
 
     const logEntry: AuditLog = {
       id: 'log-' + Date.now(),
@@ -1848,7 +1905,7 @@ class DataService {
     this.saveAuditLogs();
 
     this.notifyListeners();
-    return Promise.resolve(newReq);
+    return newReq;
   }
 
   public updateLicenseRequest(id: string, updates: Partial<LicenseRequest>): LicenseRequest {
@@ -1928,17 +1985,75 @@ class DataService {
   /**
    * Permite al agente justificar una licencia autorizada adjuntando comprobante/documentación
    */
-  public justifyAuthorizedRequest(
+  /**
+   * Permite al agente justificar una licencia autorizada adjuntando comprobante/documentación
+   */
+  public async justifyAuthorizedRequest(
     requestId: string,
     employeeNumber: string,
     file: { name: string; size: string; dataUrl: string; driveUrl?: string; driveFileId?: string },
     observacion?: string
   ): Promise<LicenseRequest> {
-    const index = this.requests.findIndex((r) => r.id === requestId);
+    await this.initialize();
+    let index = this.requests.findIndex((r) => r.id === requestId);
+    if (index === -1) {
+      await this.refreshRequestsFromSupabase();
+      index = this.requests.findIndex((r) => r.id === requestId);
+    }
     if (index === -1) throw new Error('Solicitud no encontrada.');
 
     const req = this.requests[index];
-    if (req.employeeNumber.trim().toLowerCase() !== employeeNumber.trim().toLowerCase()) {
+
+    // Validación de permisos flexible: El solicitante puede identificarse por Legajo o por DNI
+    const cleanParam = (employeeNumber || '').trim().toLowerCase();
+    const cleanDigits = cleanParam.replace(/\D/g, '');
+
+    const reqEmp = (req.employeeNumber || '').trim().toLowerCase();
+    const reqEmpDigits = reqEmp.replace(/\D/g, '');
+    const reqDni = (req.agentDni || '').trim().toLowerCase();
+    const reqDniDigits = reqDni.replace(/\D/g, '');
+
+    // Buscar agente por el identificador provisto (legajo o DNI)
+    const agentByParam = this.agents.find((a) => {
+      const aEmp = (a.employeeNumber || '').trim().toLowerCase();
+      const aDni = (a.dni || '').trim().toLowerCase();
+      const aEmpDigits = aEmp.replace(/\D/g, '');
+      const aDniDigits = aDni.replace(/\D/g, '');
+      return (
+        (cleanParam && (aEmp === cleanParam || aDni === cleanParam)) ||
+        (cleanDigits && (aEmpDigits === cleanDigits || aDniDigits === cleanDigits))
+      );
+    });
+
+    // Buscar agente asociado a la solicitud
+    const agentByReq = this.agents.find((a) => {
+      const aEmp = (a.employeeNumber || '').trim().toLowerCase();
+      const aDni = (a.dni || '').trim().toLowerCase();
+      const aEmpDigits = aEmp.replace(/\D/g, '');
+      const aDniDigits = aDni.replace(/\D/g, '');
+      return (
+        (reqEmp && (aEmp === reqEmp || aDni === reqEmp)) ||
+        (reqDni && (aEmp === reqDni || aDni === reqDni)) ||
+        (reqEmpDigits && (aEmpDigits === reqEmpDigits || aDniDigits === reqEmpDigits)) ||
+        (reqDniDigits && (aEmpDigits === reqDniDigits || aDniDigits === reqDniDigits))
+      );
+    });
+
+    const isDirectMatch =
+      (cleanParam && (reqEmp === cleanParam || reqDni === cleanParam)) ||
+      (cleanDigits && (reqEmpDigits === cleanDigits || reqDniDigits === cleanDigits));
+
+    const isCrossAgentMatch =
+      (agentByParam && agentByReq && (agentByParam.id === agentByReq.id || agentByParam.dni === agentByReq.dni)) ||
+      (agentByParam && (
+        (agentByParam.employeeNumber && agentByParam.employeeNumber.trim().toLowerCase() === reqEmp) ||
+        (agentByParam.dni && agentByParam.dni.trim().toLowerCase() === reqDni) ||
+        (cleanDigits && agentByParam.dni.replace(/\D/g, '') === reqDniDigits)
+      ));
+
+    const isAdmin = authService.isAdminOrSuperadmin();
+
+    if (!isDirectMatch && !isCrossAgentMatch && !isAdmin) {
       throw new Error('No tiene permisos para justificar esta solicitud.');
     }
 
@@ -1954,7 +2069,7 @@ class DataService {
       estadoAnterior: prevStatus,
       estadoNuevo: 'Justificada',
       fecha: new Date().toISOString(),
-      usuario: `Agente Leg. ${employeeNumber}`,
+      usuario: `Agente Leg. ${req.employeeNumber || employeeNumber}`,
       detalle: observacion?.trim()
         ? `Comprobante de justificación adjuntado (${file.name}): ${observacion.trim()}`
         : `Comprobante de justificación adjuntado por el agente (${file.name}).`,
@@ -1966,16 +2081,23 @@ class DataService {
     this.saveRequests();
 
     // Actualizar directamente en Supabase PostgreSQL (solicitud_licencias)
-    supabase.from('solicitud_licencias')
-      .update({
-        estado: 'Justificada',
-        justificacion_url: file.driveUrl || file.dataUrl,
-        detalle_estado: observacion?.trim() || `Comprobante adjuntado (${file.name})`,
-      })
-      .eq('codigo', req.id)
-      .then(({ error }) => {
-        if (error) console.warn('Supabase justify notice:', error.message);
-      });
+    try {
+      const numId = parseInt(req.id.replace(/\D/g, ''), 10);
+      let updateQuery = supabase.from('solicitud_licencias')
+        .update({
+          estado: 'Justificada',
+          justificacion_url: file.driveUrl || file.dataUrl,
+          detalle_estado: observacion?.trim() || `Comprobante adjuntado (${file.name})`,
+        });
+
+      if (!isNaN(numId) && numId > 0) {
+        await updateQuery.or(`codigo.eq.${req.id},solicitud_licencia_id.eq.${numId}`);
+      } else {
+        await updateQuery.eq('codigo', req.id);
+      }
+    } catch (e: any) {
+      console.warn('Supabase justify notice:', e?.message || e);
+    }
 
     this.auditLogs.unshift({
       id: 'log-' + Date.now(),
@@ -1984,13 +2106,13 @@ class DataService {
       employeeNumber: req.employeeNumber,
       agentName: req.agentName,
       reason: `El agente adjuntó comprobante de justificación (${file.name}). Estado actualizado a Justificada.`,
-      usuario: `Agente Leg. ${employeeNumber}`,
+      usuario: `Agente Leg. ${req.employeeNumber || employeeNumber}`,
       timestamp: new Date().toISOString(),
     });
     this.saveAuditLogs();
 
     this.notifyListeners();
-    return Promise.resolve(req);
+    return req;
   }
 
   // Section 18: Modificación Masiva

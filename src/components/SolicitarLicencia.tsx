@@ -23,11 +23,7 @@ import { Agent, AssignedPost, LicenseType, LicenseRequest } from '../types';
 import { dataService, calculateDaysBetween, formatYMD, formatDMY } from '../services/dataService';
 import { 
   uploadFileToDrive, 
-  FOLDER_FIRMAS_ID, 
-  ensureGoogleDriveToken, 
-  connectGoogleAdminDrive, 
-  GOOGLE_DRIVE_ACCOUNT_EMAIL,
-  isGoogleDriveConnected
+  FOLDER_FIRMAS_ID
 } from '../services/googleDriveService';
 import { SignatureCanvas } from './SignatureCanvas';
 

@@ -26,9 +26,6 @@ import {
   processFileForUpload, 
   uploadFileToDrive, 
   FOLDER_CONSTANCIAS_ID,
-  ensureGoogleDriveToken,
-  connectGoogleAdminDrive,
-  GOOGLE_DRIVE_ACCOUNT_EMAIL,
   getDriveThumbnailUrl,
   getDriveDownloadUrl
 } from '../services/googleDriveService';
@@ -137,9 +134,10 @@ export const MisSolicitudes: React.FC<MisSolicitudesProps> = ({
 
       // 2. Guardar en base de datos con enlace directo a Google Drive
       setUploadProgressText('Actualizando registro de la solicitud...');
+      const targetEmpNum = agentInfo?.employeeNumber || requestToJustify.employeeNumber || activeEmployeeNumber;
       await dataService.justifyAuthorizedRequest(
         requestToJustify.id,
-        activeEmployeeNumber,
+        targetEmpNum,
         {
           name: justifyFile.name,
           size: justifyFile.size,

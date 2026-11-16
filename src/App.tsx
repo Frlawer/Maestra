@@ -5,7 +5,6 @@ import { MisSolicitudes } from './components/MisSolicitudes';
 import { AdminLayout } from './components/admin/AdminLayout';
 import { dataService } from './services/dataService';
 import { authService } from './services/authService';
-import { driveSyncCronService } from './services/driveSyncCronService';
 import { SystemUser } from './types';
 import { Lock, Mail, School, ShieldCheck, ArrowLeft, AlertCircle } from 'lucide-react';
 
@@ -46,9 +45,6 @@ export default function App() {
     const unsub = dataService.subscribe(() => {
       setIsDbConnected(true);
     });
-
-    // Initialize automatic 1-hour Drive synchronization cron
-    driveSyncCronService.init();
 
     // Listen to browser URL changes (back/forward and hash changes)
     const handleLocationChange = () => {
