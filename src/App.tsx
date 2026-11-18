@@ -274,12 +274,6 @@ export default function App() {
             </a>
           </p>
 
-          {/* Estado de conexión con Supabase */}
-          <div className="pt-2 flex items-center justify-center gap-1.5 text-[11px] text-slate-500 font-mono">
-            <span className={`inline-block w-2 h-2 rounded-full ${isDbConnected ? 'bg-emerald-500 shadow-xs' : 'bg-amber-400 animate-pulse'}`} />
-            <span>{isDbConnected ? 'Supabase PostgreSQL en producción (512 Agentes • 424 Cargos • 11.007 SISO)' : 'Conectando con base de datos Supabase...'}</span>
-          </div>
-
           {/* Acceso discreto para administración */}
           <div className="pt-2">
             <a
