@@ -465,7 +465,7 @@ export const CargosPuestosModule: React.FC = () => {
                   const assignedList = puesto?.agentesAsignados || [];
 
                   const cursoClean = cargo.curso ? cargo.curso.replace('° Año', '').replace('°', '').trim() : '';
-                  const seccionClean = cargo.seccion ? cargo.seccion.replace('°', '').trim() : '';
+                  const seccionClean = cargo.seccion ? cargo.seccion.replace('Div.', '').trim() : '';
                   const turnoShort = getTurnoShort(cargo.turno);
                   const obligShort = cargo.obligaciones ? cargo.obligaciones.replace(/horas?|cátedras?/gi, '').trim() : '';
 
