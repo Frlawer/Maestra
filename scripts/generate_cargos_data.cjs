@@ -136,7 +136,7 @@ lines.forEach((line, idx) => {
 
   // Formatted curso & seccion
   const cursoDisplay = cursoRaw ? (cursoRaw.match(/^\d+$/) ? `${cursoRaw}°` : cursoRaw) : 'Institucional';
-  const seccionDisplay = seccionRaw ? (seccionRaw.length <= 2 ? `Div. ${seccionRaw}` : seccionRaw) : 'Única';
+  const seccionDisplay = seccionRaw ? (seccionRaw.length <= 2 ? `${seccionRaw}` : seccionRaw) : 'Única';
 
   const agentesAsignados = [];
 
