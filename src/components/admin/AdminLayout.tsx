@@ -373,8 +373,8 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
         </div>
       </aside>
 
-      {/* MOBILE TOPBAR */}
-      <header className="md:hidden bg-slate-900 text-white p-4 flex items-center justify-between sticky top-0 z-40 shadow-md">
+      {/* MOBILE TOPBAR (Fixed so it stays accessible while scrolling) */}
+      <header className="md:hidden fixed top-0 left-0 right-0 h-16 bg-slate-900 text-white px-4 flex items-center justify-between z-40 shadow-md border-b border-slate-800">
         <div className="flex items-center gap-2.5">
           <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
             <School className="w-5 h-5" />
@@ -387,15 +387,28 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
 
         <button
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-          className="p-2 rounded-lg bg-slate-800 text-slate-300"
+          className="p-2 rounded-lg bg-slate-800 text-slate-300 hover:text-white transition-colors"
+          aria-label={mobileMenuOpen ? 'Cerrar menú' : 'Abrir menú'}
         >
           {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
         </button>
       </header>
 
-      {/* MOBILE DRAWER */}
+      {/* MOBILE TOPBAR SPACER */}
+      <div className="md:hidden h-16 shrink-0" />
+
+      {/* MOBILE DRAWER BACKDROP */}
       {mobileMenuOpen && (
-        <div className="md:hidden bg-slate-900 text-white p-4 space-y-2 border-b border-slate-800 animate-fade-in max-h-[80vh] overflow-y-auto">
+        <div
+          className="md:hidden fixed inset-0 top-16 bg-slate-950/50 backdrop-blur-[1px] z-30"
+          onClick={() => setMobileMenuOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* MOBILE DRAWER (Fixed directly under mobile topbar regardless of scroll position) */}
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed top-16 left-0 right-0 z-40 bg-slate-900 text-white p-4 space-y-2 border-b border-slate-800 animate-fade-in max-h-[calc(100dvh-4rem)] overflow-y-auto shadow-2xl">
           {generalNavItems.map((item) => {
             const isActive = activeTab === item.id;
             return (
@@ -454,9 +467,9 @@ export const AdminLayout: React.FC<AdminLayoutProps> = ({
       )}
 
       {/* MAIN CONTENT AREA - MAXIMIZED FOR FULL SCREEN WIDTH */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto">
+      <main className="flex-1 flex flex-col min-w-0">
         {/* Top desktop utility bar */}
-        <header className="hidden md:flex h-16 bg-white border-b border-slate-200 px-6 lg:px-8 items-center justify-between shrink-0 shadow-xs">
+        <header className="hidden md:flex h-16 sticky top-0 z-30 bg-white/95 backdrop-blur-sm border-b border-slate-200 px-6 lg:px-8 items-center justify-between shrink-0 shadow-xs">
           <div className="flex items-center gap-4">
             {/* Quick Auto-hide Toggle Button */}
             <button
