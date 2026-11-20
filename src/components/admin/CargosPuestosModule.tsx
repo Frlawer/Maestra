@@ -679,7 +679,7 @@ export const CargosPuestosModule: React.FC = () => {
 
         {/* Pagination controls */}
         {pageSize !== 9999 && totalPages > 1 && (
-          <div className="p-4 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="p-2 bg-slate-50 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
             <div className="text-slate-500">
               Página <strong>{currentPage}</strong> de <strong>{totalPages}</strong> (Total: {filteredCargos.length} cargos)
             </div>
