@@ -17,7 +17,8 @@ import {
   FileCheck2,
   X,
   Cloud,
-  ExternalLink
+  ExternalLink,
+  UserPlus
 } from 'lucide-react';
 import { Agent, AssignedPost, LicenseType, LicenseRequest } from '../types';
 import { dataService, calculateDaysBetween, formatYMD, formatDMY } from '../services/dataService';
@@ -30,16 +31,19 @@ import { SignatureCanvas } from './SignatureCanvas';
 interface SolicitarLicenciaProps {
   initialEmployeeNumber?: string;
   onGoToMisSolicitudes: (employeeNumber: string) => void;
+  onGoToNuevoAgente?: (prefillQuery?: string) => void;
 }
 
 export const SolicitarLicencia: React.FC<SolicitarLicenciaProps> = ({
   initialEmployeeNumber = '',
   onGoToMisSolicitudes,
+  onGoToNuevoAgente,
 }) => {
   // Step 1: Agent Identification
   const [employeeInput, setEmployeeInput] = useState(initialEmployeeNumber);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationError, setVerificationError] = useState<string | null>(null);
+  const [agentNotFound, setAgentNotFound] = useState(false);
   const [currentAgent, setCurrentAgent] = useState<Agent | null>(null);
 
   // Form Fields
@@ -111,19 +115,23 @@ export const SolicitarLicencia: React.FC<SolicitarLicenciaProps> = ({
     const num = empNum || employeeInput;
     if (!num.trim()) {
       setVerificationError('Por favor ingrese su DNI o número de empleado.');
+      setAgentNotFound(false);
       return;
     }
 
     setIsVerifying(true);
     setVerificationError(null);
+    setAgentNotFound(false);
 
     try {
       const agent = await dataService.verifyAgent(num);
       if (!agent) {
         setVerificationError('No se encontró ningún agente con el número ingresado. Verifique su DNI o número de legajo.');
+        setAgentNotFound(true);
         setCurrentAgent(null);
       } else {
         setCurrentAgent(agent);
+        setAgentNotFound(false);
         const postsList = agent.posts || [];
         setAssignedPosts(postsList);
         if (postsList.length > 0) {
@@ -136,6 +144,7 @@ export const SolicitarLicencia: React.FC<SolicitarLicenciaProps> = ({
       }
     } catch (err) {
       setVerificationError('Error al consultar el padrón de agentes en Supabase. Intente nuevamente.');
+      setAgentNotFound(false);
     } finally {
       setIsVerifying(false);
     }
@@ -469,6 +478,7 @@ export const SolicitarLicencia: React.FC<SolicitarLicenciaProps> = ({
                   onChange={(e) => {
                     setEmployeeInput(e.target.value);
                     if (verificationError) setVerificationError(null);
+                    if (agentNotFound) setAgentNotFound(false);
                   }}
                   className="w-full pl-4 pr-11 py-3 text-base rounded-xl border border-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all font-mono"
                   autoFocus
@@ -491,9 +501,29 @@ export const SolicitarLicencia: React.FC<SolicitarLicenciaProps> = ({
             </div>
 
             {verificationError && (
-              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs sm:text-sm rounded-xl flex items-start gap-2 animate-shake">
-                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-500" />
-                <span>{verificationError}</span>
+              <div className="p-3.5 bg-red-50 border border-red-200 text-red-700 text-xs sm:text-sm rounded-xl space-y-2.5 animate-shake">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-500" />
+                  <span>{verificationError}</span>
+                </div>
+                {agentNotFound && onGoToNuevoAgente && (
+                  <div className="pt-2 border-t border-red-200/70 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs text-red-800 font-medium">
+                      ¿Es su primera vez en la institución o aún no figura en el padrón?
+                    </span>
+                    <a
+                      href="/nuevoAgente"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        onGoToNuevoAgente(employeeInput.trim());
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#2B3E4C] hover:bg-[#1E2C36] text-white text-xs font-bold shadow-xs transition-colors"
+                    >
+                      <UserPlus className="w-3.5 h-3.5 text-[#87b867]" />
+                      <span>Agregar agente nuevo</span>
+                    </a>
+                  </div>
+                )}
               </div>
             )}
           </form>

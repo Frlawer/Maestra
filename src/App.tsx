@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Navbar, ActiveTab } from './components/Navbar';
 import { SolicitarLicencia } from './components/SolicitarLicencia';
 import { MisSolicitudes } from './components/MisSolicitudes';
+import { NuevoAgente } from './components/NuevoAgente';
 import { AdminLayout } from './components/admin/AdminLayout';
 import { dataService } from './services/dataService';
 import { authService } from './services/authService';
@@ -23,12 +24,27 @@ const isAdminPath = (pathname: string, hash: string): boolean => {
   );
 };
 
+const isNuevoAgentePath = (pathname: string, hash: string): boolean => {
+  const p = (pathname || '').toLowerCase().replace(/\/+$/, '');
+  const h = (hash || '').toLowerCase();
+  return (
+    p === '/nuevoagente' ||
+    h === '#nuevoagente' ||
+    h === '#/nuevoagente'
+  );
+};
+
 export default function App() {
   const [viewMode, setViewMode] = useState<'public' | 'admin'>(() => 
     typeof window !== 'undefined' && isAdminPath(window.location.pathname, window.location.hash) ? 'admin' : 'public'
   );
-  const [publicTab, setPublicTab] = useState<ActiveTab>('solicitar');
+  const [publicTab, setPublicTab] = useState<ActiveTab>(() =>
+    typeof window !== 'undefined' && isNuevoAgentePath(window.location.pathname, window.location.hash)
+      ? 'nuevo-agente'
+      : 'solicitar'
+  );
   const [currentEmployeeNumber, setCurrentEmployeeNumber] = useState<string>('');
+  const [prefillNewAgentQuery, setPrefillNewAgentQuery] = useState<string>('');
   const [currentUser, setCurrentUser] = useState<SystemUser | null>(() => authService.getCurrentUser());
   const [isDbConnected, setIsDbConnected] = useState<boolean>(() => dataService.getIsLoaded());
 
@@ -48,8 +64,17 @@ export default function App() {
 
     // Listen to browser URL changes (back/forward and hash changes)
     const handleLocationChange = () => {
-      const isAdm = isAdminPath(window.location.pathname, window.location.hash);
+      const path = window.location.pathname;
+      const hash = window.location.hash;
+      const isAdm = isAdminPath(path, hash);
       setViewMode(isAdm ? 'admin' : 'public');
+      if (!isAdm) {
+        if (isNuevoAgentePath(path, hash)) {
+          setPublicTab('nuevo-agente');
+        } else {
+          setPublicTab((prev) => (prev === 'nuevo-agente' ? 'solicitar' : prev));
+        }
+      }
     };
 
     window.addEventListener('popstate', handleLocationChange);
@@ -73,16 +98,35 @@ export default function App() {
       window.history.pushState(null, '', '/');
     }
     setViewMode('public');
+    setPublicTab((prev) => (prev === 'nuevo-agente' ? 'solicitar' : prev));
+  };
+
+  const handleSelectPublicTab = (tab: ActiveTab) => {
+    setPublicTab(tab);
+    if (typeof window !== 'undefined') {
+      const targetUrl = tab === 'nuevo-agente' ? '/nuevoAgente' : '/';
+      if (window.location.pathname !== targetUrl) {
+        window.history.pushState(null, '', targetUrl);
+      }
+    }
+    if (tab !== 'nuevo-agente') {
+      setPrefillNewAgentQuery('');
+    }
   };
 
   const handleNavigateToMisSolicitudes = (empNum: string) => {
     setCurrentEmployeeNumber(empNum);
-    setPublicTab('mis-solicitudes');
+    handleSelectPublicTab('mis-solicitudes');
   };
 
   const handleNavigateToSolicitar = (empNum?: string) => {
     if (empNum) setCurrentEmployeeNumber(empNum);
-    setPublicTab('solicitar');
+    handleSelectPublicTab('solicitar');
+  };
+
+  const handleNavigateToNuevoAgente = (prefillQuery?: string) => {
+    setPrefillNewAgentQuery(prefillQuery || '');
+    handleSelectPublicTab('nuevo-agente');
   };
 
   const handleAdminLoginSubmit = (e: React.FormEvent) => {
@@ -219,28 +263,36 @@ export default function App() {
     );
   }
 
-  // 2. PUBLIC FRONTEND FOR AGENTS (Only "Solicitar Licencia" and "Mis Solicitudes")
+  // 2. PUBLIC FRONTEND FOR AGENTS ("Solicitar Licencia", "Consultar Licencias", "Nuevo Agente")
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col antialiased selection:bg-blue-600 selection:text-white">
-      {/* Institutional Top Navbar with ONLY the 2 requested tabs */}
+      {/* Institutional Top Navbar */}
       <Navbar
         activeTab={publicTab}
-        onSelectTab={setPublicTab}
+        onSelectTab={handleSelectPublicTab}
         onNavigateToAdmin={navigateToAdmin}
       />
 
-      {/* Main Container: Strictly Formulario de Solicitar Licencia y Mis Solicitudes */}
+      {/* Main Container */}
       <main className="flex-1 pb-24 sm:pb-12">
         {publicTab === 'solicitar' && (
           <SolicitarLicencia
             initialEmployeeNumber={currentEmployeeNumber}
             onGoToMisSolicitudes={handleNavigateToMisSolicitudes}
+            onGoToNuevoAgente={handleNavigateToNuevoAgente}
           />
         )}
 
         {publicTab === 'mis-solicitudes' && (
           <MisSolicitudes
             initialEmployeeNumber={currentEmployeeNumber}
+            onGoToSolicitar={handleNavigateToSolicitar}
+          />
+        )}
+
+        {publicTab === 'nuevo-agente' && (
+          <NuevoAgente
+            initialQuery={prefillNewAgentQuery}
             onGoToSolicitar={handleNavigateToSolicitar}
           />
         )}

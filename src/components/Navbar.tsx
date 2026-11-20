@@ -1,7 +1,7 @@
 import React from 'react';
-import { FileEdit, FolderClock, Lock } from 'lucide-react';
+import { FileEdit, FolderClock, Lock, UserPlus } from 'lucide-react';
 
-export type ActiveTab = 'solicitar' | 'mis-solicitudes';
+export type ActiveTab = 'solicitar' | 'mis-solicitudes' | 'nuevo-agente';
 
 interface NavbarProps {
   activeTab: ActiveTab;
@@ -72,12 +72,12 @@ export const Navbar: React.FC<NavbarProps> = ({
           )}
         </div>
 
-        {/* Pestañas de navegación pública: Solicitar Licencia y Consultar Licencias */}
+        {/* Pestañas de navegación pública: Solicitar Licencia, Consultar Licencias y Nuevo Agente */}
         <div className="flex justify-center mt-4 sm:mt-5">
-          <nav className="inline-flex p-1 bg-white rounded-2xl shadow-xs border border-slate-200 gap-1.5">
+          <nav className="inline-flex flex-wrap justify-center p-1 bg-white rounded-2xl shadow-xs border border-slate-200 gap-1.5">
             <button
               onClick={() => onSelectTab('solicitar')}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                 activeTab === 'solicitar'
                   ? 'bg-[#87b867] text-white shadow-xs'
                   : 'text-slate-600 hover:text-[#2B3E4C] hover:bg-slate-50'
@@ -89,7 +89,7 @@ export const Navbar: React.FC<NavbarProps> = ({
 
             <button
               onClick={() => onSelectTab('mis-solicitudes')}
-              className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+              className={`flex items-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
                 activeTab === 'mis-solicitudes'
                   ? 'bg-[#87b867] text-white shadow-xs'
                   : 'text-slate-600 hover:text-[#2B3E4C] hover:bg-slate-50'
@@ -98,35 +98,59 @@ export const Navbar: React.FC<NavbarProps> = ({
               <FolderClock className="w-4 h-4" />
               <span>Consultar licencias</span>
             </button>
+
+            <button
+              onClick={() => onSelectTab('nuevo-agente')}
+              className={`flex items-center gap-2 px-4 sm:px-5 py-2.5 rounded-xl text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                activeTab === 'nuevo-agente'
+                  ? 'bg-[#87b867] text-white shadow-xs'
+                  : 'text-slate-600 hover:text-[#2B3E4C] hover:bg-slate-50'
+              }`}
+            >
+              <UserPlus className="w-4 h-4" />
+              <span>Nuevo agente</span>
+            </button>
           </nav>
         </div>
       </header>
 
       {/* Barra de navegación inferior móvil */}
-      <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#2B3E4C]/95 backdrop-blur-md border-t border-slate-700/60 px-3 py-1.5 shadow-xl pb-safe">
-        <div className="grid grid-cols-2 gap-2 max-w-sm mx-auto">
+      <div className="sm:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#2B3E4C]/95 backdrop-blur-md border-t border-slate-700/60 px-2 py-1.5 shadow-xl pb-safe">
+        <div className="grid grid-cols-3 gap-1.5 max-w-md mx-auto">
           <button
             onClick={() => onSelectTab('solicitar')}
-            className={`flex flex-col items-center justify-center py-2 px-2 rounded-xl text-xs font-semibold transition-colors ${
+            className={`flex flex-col items-center justify-center py-2 px-1.5 rounded-xl text-[11px] font-semibold transition-colors ${
               activeTab === 'solicitar'
                 ? 'text-white bg-[#87b867] font-bold shadow-xs'
                 : 'text-slate-300 hover:text-white'
             }`}
           >
             <FileEdit className="w-5 h-5 mb-0.5" />
-            <span>Solicitar licencia</span>
+            <span>Solicitar</span>
           </button>
 
           <button
             onClick={() => onSelectTab('mis-solicitudes')}
-            className={`flex flex-col items-center justify-center py-2 px-2 rounded-xl text-xs font-semibold transition-colors ${
+            className={`flex flex-col items-center justify-center py-2 px-1.5 rounded-xl text-[11px] font-semibold transition-colors ${
               activeTab === 'mis-solicitudes'
                 ? 'text-white bg-[#87b867] font-bold shadow-xs'
                 : 'text-slate-300 hover:text-white'
             }`}
           >
             <FolderClock className="w-5 h-5 mb-0.5" />
-            <span>Consultar licencias</span>
+            <span>Consultar</span>
+          </button>
+
+          <button
+            onClick={() => onSelectTab('nuevo-agente')}
+            className={`flex flex-col items-center justify-center py-2 px-1.5 rounded-xl text-[11px] font-semibold transition-colors ${
+              activeTab === 'nuevo-agente'
+                ? 'text-white bg-[#87b867] font-bold shadow-xs'
+                : 'text-slate-300 hover:text-white'
+            }`}
+          >
+            <UserPlus className="w-5 h-5 mb-0.5" />
+            <span>Nuevo agente</span>
           </button>
         </div>
       </div>

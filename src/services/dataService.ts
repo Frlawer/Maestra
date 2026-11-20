@@ -1014,22 +1014,27 @@ class DataService {
   }
 
   public async createAgent(data: Omit<Agent, 'id' | 'fullName' | 'hasAssignedPost'>): Promise<Agent> {
-    const existsNum = this.agents.some((a) => a.employeeNumber === data.employeeNumber.trim());
-    if (existsNum) {
-      throw new Error(`Ya existe un agente registrado con el número de empleado ${data.employeeNumber}.`);
-    }
-    const existsDni = this.agents.some((a) => a.dni.replace(/\D/g, '') === data.dni.replace(/\D/g, ''));
-    if (existsDni) {
-      throw new Error(`Ya existe un agente registrado con el DNI ${data.dni}.`);
-    }
+    await this.initialize();
 
-    const dniNum = parseInt(data.dni.replace(/\D/g, ''), 10);
-    const legajoNum = parseInt(data.employeeNumber.replace(/\D/g, ''), 10);
+    const cleanDni = data.dni.replace(/\D/g, '');
+    const cleanLegajo = data.employeeNumber.replace(/\D/g, '');
+    const dniNum = parseInt(cleanDni, 10);
+    const legajoNum = parseInt(cleanLegajo, 10);
+
     if (isNaN(dniNum) || dniNum <= 0) {
       throw new Error('El DNI debe ser numérico y válido.');
     }
     if (isNaN(legajoNum) || legajoNum <= 0) {
       throw new Error('El número de empleado / legajo debe ser numérico y válido.');
+    }
+
+    const existsNum = this.agents.some((a) => a.employeeNumber.replace(/\D/g, '') === String(legajoNum));
+    if (existsNum) {
+      throw new Error(`Ya existe un agente registrado con el número de empleado ${legajoNum}.`);
+    }
+    const existsDni = this.agents.some((a) => a.dni.replace(/\D/g, '') === String(dniNum));
+    if (existsDni) {
+      throw new Error(`Ya existe un agente registrado con el DNI ${dniNum}.`);
     }
 
     const { data: insData, error } = await this.insertWithIdentityFallback('agentes', 'agente_id', {
@@ -1047,6 +1052,10 @@ class DataService {
     });
 
     if (error || !insData) {
+      const msg = (error?.message || '').toLowerCase();
+      if (error?.code === '23505' || msg.includes('duplicate key') || msg.includes('agentes_dni_key')) {
+        throw new Error(`Ya existe un agente registrado con el DNI ${dniNum}.`);
+      }
       throw new Error(error?.message || 'Error al crear agente en Supabase.');
     }
 
