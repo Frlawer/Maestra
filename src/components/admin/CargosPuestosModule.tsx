@@ -53,6 +53,9 @@ export const CargosPuestosModule: React.FC = () => {
   const [assignAgentSearch, setAssignAgentSearch] = useState('');
   const [assignSituacion, setAssignSituacion] = useState<'Titular' | 'Interino' | 'Suplente'>('Titular');
   const [assignError, setAssignError] = useState<string | null>(null);
+  const [isAssigning, setIsAssigning] = useState(false);
+  const [isSavingCargo, setIsSavingCargo] = useState(false);
+  const [cargoFormError, setCargoFormError] = useState<string | null>(null);
 
   // Tooltip & Copy state (Section 14: Hover tooltip with Email + copy to clipboard)
   const [copiedEmail, setCopiedEmail] = useState<string | null>(null);
@@ -74,6 +77,7 @@ export const CargosPuestosModule: React.FC = () => {
     horarios: Horario[];
     tieneArticulacion: boolean;
     horarioArticulacion?: Horario;
+    horariosArticulacion?: Horario[];
   }>({
     secuencia: '',
     turno: 'Mañana',
@@ -110,13 +114,18 @@ export const CargosPuestosModule: React.FC = () => {
   };
 
   // Open Assign Agent to Post Modal
-  const handleOpenAssign = (e: React.MouseEvent, puesto: Puesto) => {
+  const handleOpenAssign = async (e: React.MouseEvent, cargo: Cargo, existingPuesto?: Puesto) => {
     e.stopPropagation();
-    setAssigningPuesto(puesto);
+    setAssignError(null);
     setAssignAgentId('');
     setAssignAgentSearch('');
     setAssignSituacion('Titular');
-    setAssignError(null);
+    try {
+      const targetPuesto = existingPuesto || (await dataService.getOrCreatePuestoForCargo(cargo.id));
+      setAssigningPuesto(targetPuesto);
+    } catch (err: any) {
+      setAssignError(err.message || 'No se pudo obtener el puesto en Supabase.');
+    }
   };
 
   const assigningCargo = useMemo(
@@ -144,50 +153,62 @@ export const CargosPuestosModule: React.FC = () => {
     }).slice(0, 30);
   }, [agents, assignAgentSearch]);
 
-  const handleConfirmAssign = (e: React.FormEvent) => {
+  const handleConfirmAssign = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!assigningPuesto || !assignAgentId) {
       setAssignError('Por favor seleccione un agente de la lista.');
       return;
     }
 
+    setIsAssigning(true);
+    setAssignError(null);
     try {
-      dataService.assignAgentToPuesto(assigningPuesto.id, assignAgentId, assignSituacion);
+      await dataService.assignAgentToPuesto(assigningPuesto.id, assignAgentId, assignSituacion);
       setAssigningPuesto(null);
       refreshData();
     } catch (err: any) {
-      setAssignError(err.message || 'Error al asignar el agente.');
+      setAssignError(err.message || 'Error al asignar el agente en Supabase.');
+    } finally {
+      setIsAssigning(false);
     }
   };
 
-  const handleRemoveAgent = (puestoId: string, agenteId: string) => {
+  const handleRemoveAgent = async (puestoId: string, agenteId: string) => {
     if (window.confirm('¿Desea desasignar este agente del puesto?')) {
-      dataService.removeAgentFromPuesto(puestoId, agenteId);
-      refreshData();
+      try {
+        await dataService.removeAgentFromPuesto(puestoId, agenteId);
+        refreshData();
+      } catch (err: any) {
+        alert(err.message || 'Error al desasignar agente en Supabase.');
+      }
     }
   };
 
   // Cargo Create / Edit
   const handleOpenCreateCargo = () => {
     setEditingCargo(null);
+    setCargoFormError(null);
     setCargoForm({
-      secuencia: `SEC-${Math.floor(100 + Math.random() * 900)}`,
+      secuencia: `${Math.floor(100 + Math.random() * 900)}`,
       turno: 'Mañana',
       curso: '1°',
       seccion: '1°',
       descripcion: '',
-      obligaciones: '',
+      obligaciones: '1',
       area: 'Exactas y Naturales',
       horarios: [
         { id: 'h-' + Date.now(), dia: 'Lunes', horaIngreso: '08:00', horaSalida: '09:20' },
       ],
       tieneArticulacion: false,
+      horarioArticulacion: undefined,
+      horariosArticulacion: undefined,
     });
     setShowCargoFormModal(true);
   };
 
   const handleOpenEditCargo = (cargo: Cargo) => {
     setEditingCargo(cargo);
+    setCargoFormError(null);
     setCargoForm({
       secuencia: cargo.secuencia,
       turno: cargo.turno,
@@ -199,6 +220,7 @@ export const CargosPuestosModule: React.FC = () => {
       horarios: cargo.horarios ? [...cargo.horarios] : [],
       tieneArticulacion: cargo.tieneArticulacion,
       horarioArticulacion: cargo.horarioArticulacion,
+      horariosArticulacion: cargo.horariosArticulacion,
     });
     setShowCargoFormModal(true);
   };
@@ -223,21 +245,28 @@ export const CargosPuestosModule: React.FC = () => {
     });
   };
 
-  const handleSaveCargo = (e: React.FormEvent) => {
+  const handleSaveCargo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!cargoForm.descripcion.trim()) {
-      alert('La descripción del cargo es obligatoria.');
+      setCargoFormError('La descripción del cargo es obligatoria.');
       return;
     }
 
-    if (editingCargo) {
-      dataService.updateCargo(editingCargo.id, cargoForm);
-    } else {
-      dataService.createCargo({ ...cargoForm, activo: true });
+    setIsSavingCargo(true);
+    setCargoFormError(null);
+    try {
+      if (editingCargo) {
+        await dataService.updateCargo(editingCargo.id, cargoForm);
+      } else {
+        await dataService.createCargo({ ...cargoForm, activo: true });
+      }
+      setShowCargoFormModal(false);
+      refreshData();
+    } catch (err: any) {
+      setCargoFormError(err.message || 'Error al guardar el cargo en Supabase.');
+    } finally {
+      setIsSavingCargo(false);
     }
-
-    setShowCargoFormModal(false);
-    refreshData();
   };
 
   // Drag and drop handlers
@@ -255,14 +284,14 @@ export const CargosPuestosModule: React.FC = () => {
     }
   };
 
-  const handleDrop = (e: React.DragEvent, targetCargoId: string) => {
+  const handleDrop = async (e: React.DragEvent, targetCargoId: string) => {
     e.preventDefault();
     const sourceId = e.dataTransfer.getData('text/plain') || draggedCargoId;
     if (sourceId && sourceId !== targetCargoId) {
       const targetIndex = cargos.findIndex((c) => c.id === targetCargoId);
       if (targetIndex !== -1) {
         const targetPos = targetIndex + 1;
-        const updated = dataService.moveCargoToPosition(sourceId, targetPos);
+        const updated = await dataService.moveCargoToPosition(sourceId, targetPos);
         setCargos(updated);
       }
     }
@@ -633,8 +662,8 @@ export const CargosPuestosModule: React.FC = () => {
                       <td className="py-2 px-3 text-right align-middle w-12">
                         <button
                           type="button"
-                          onClick={(e) => puesto && handleOpenAssign(e, puesto)}
-                          className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white border border-blue-200 transition-colors font-bold text-sm"
+                          onClick={(e) => handleOpenAssign(e, cargo, puesto)}
+                          className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-blue-50 text-blue-600 hover:bg-blue-600 hover:text-white border border-blue-200 transition-colors font-bold text-sm cursor-pointer"
                           title="Asignar agente al puesto"
                         >
                           +
@@ -858,7 +887,7 @@ export const CargosPuestosModule: React.FC = () => {
                           ? `Coincidencias encontradas (${filteredAgentsToAssign.length}):`
                           : 'Sugerencias rápidas (o escriba para filtrar):'}
                       </span>
-                      <span className="font-mono text-slate-400">512 agentes registrados</span>
+                      <span className="font-mono text-slate-400">{agents.length} agentes registrados</span>
                     </div>
 
                     {/* Lista scrollable con resultados inmediatos */}
@@ -924,10 +953,10 @@ export const CargosPuestosModule: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  disabled={!assignAgentId}
+                  disabled={!assignAgentId || isAssigning}
                   className="flex-1 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold shadow-md transition-all cursor-pointer"
                 >
-                  Asignar Agente
+                  {isAssigning ? 'Guardando...' : 'Asignar Agente'}
                 </button>
               </div>
             </form>
@@ -1122,6 +1151,13 @@ export const CargosPuestosModule: React.FC = () => {
               </button>
             </div>
 
+            {cargoFormError && (
+              <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-red-500 mt-0.5" />
+                <span>{cargoFormError}</span>
+              </div>
+            )}
+
             <form onSubmit={handleSaveCargo} className="space-y-4 text-xs sm:text-sm">
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                 <div>
@@ -1131,7 +1167,7 @@ export const CargosPuestosModule: React.FC = () => {
                   <input
                     type="text"
                     required
-                    placeholder="SEC-101"
+                    placeholder="220"
                     value={cargoForm.secuencia}
                     onChange={(e) => setCargoForm({ ...cargoForm, secuencia: e.target.value })}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 font-mono"
@@ -1148,6 +1184,9 @@ export const CargosPuestosModule: React.FC = () => {
                   >
                     <option value="Mañana">Mañana</option>
                     <option value="Tarde">Tarde</option>
+                    <option value="Central">Central</option>
+                    <option value="Extendido">Extendido</option>
+                    <option value="Intermedio">Intermedio</option>
                     <option value="Vespertino">Vespertino</option>
                     <option value="Noche">Noche</option>
                   </select>
@@ -1373,9 +1412,10 @@ export const CargosPuestosModule: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold shadow-md transition-colors"
+                  disabled={isSavingCargo}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold shadow-md transition-colors cursor-pointer"
                 >
-                  {editingCargo ? 'Guardar Cambios' : 'Crear Cargo'}
+                  {isSavingCargo ? 'Guardando en Supabase...' : editingCargo ? 'Guardar Cambios' : 'Crear Cargo'}
                 </button>
               </div>
             </form>

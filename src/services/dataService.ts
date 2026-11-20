@@ -1,49 +1,79 @@
-import { 
-  collection, 
-  doc, 
-  getDocs, 
-  setDoc, 
-  deleteDoc,
-  writeBatch,
-  query, 
-  where 
-} from 'firebase/firestore';
-import { db } from './firebase';
 import { supabase } from './supabaseClient';
 import { authService } from './authService';
-import { 
-  Agent, 
-  Cargo, 
-  Puesto, 
+import {
+  Agent,
+  Cargo,
+  Puesto,
   Horario,
-  DiaSemana,
-  LicenseType, 
-  LicenseRequest, 
-  SisoLicense, 
-  SisoImportHistory, 
-  AuditLog, 
-  WeeklyAbsenceRow, 
+  LicenseType,
+  LicenseRequest,
+  SisoLicense,
+  SisoImportHistory,
+  AuditLog,
+  WeeklyAbsenceRow,
   LongLicenseItem,
   LicenseStatus,
   HistorialEstadoSolicitud,
-  PuestoCargo
+  PuestoCargo,
 } from '../types';
-import { SEED_CARGOS } from '../data/cargosData';
-import { SEED_AGENTES } from '../data/agentesData';
-import { SEED_TIPOS_LICENCIAS } from '../data/tiposLicenciasData';
-import { SEED_SISO_LICENSES } from '../data/sisoData';
-import { SEED_PUESTOS, SEED_PUESTOS_CARGOS } from '../data/puestosData';
 
-// Storage keys (v7 - Sembrado completo: Cargos, Agentes, Puestos Interinos, Tipos Licencias, SISO)
-const STORAGE_AGENTS = 'cpem_agents_v7';
-const STORAGE_CARGOS = 'cpem_cargos_v6';
-const STORAGE_PUESTOS = 'cpem_puestos_v7';
-const STORAGE_PUESTOS_CARGOS = 'cpem_puestos_cargos_v7';
-const STORAGE_TYPES = 'cpem_license_types_v6';
-const STORAGE_REQUESTS = 'cpem_license_requests_v6';
-const STORAGE_SISO_LICENSES = 'cpem_siso_licenses_v7';
-const STORAGE_SISO_IMPORTS = 'cpem_siso_imports_v7';
-const STORAGE_AUDIT_LOGS = 'cpem_audit_logs_v6';
+const LEGACY_STORAGE_KEYS = [
+  'cpem_agents_v7',
+  'cpem_cargos_v6',
+  'cpem_puestos_v7',
+  'cpem_puestos_cargos_v7',
+  'cpem_license_types_v6',
+  'cpem_license_requests_v6',
+  'cpem_siso_licenses_v7',
+  'cpem_siso_imports_v7',
+  'cpem_audit_logs_v6',
+];
+
+const TURNO_CODE_TO_LABEL: Record<string, Cargo['turno']> = {
+  M: 'Mañana',
+  TM: 'Mañana',
+  T: 'Tarde',
+  TT: 'Tarde',
+  V: 'Vespertino',
+  TV: 'Vespertino',
+  C: 'Central',
+  TC: 'Central',
+  E: 'Extendido',
+  TE: 'Extendido',
+  I: 'Intermedio',
+  TI: 'Intermedio',
+  N: 'Noche',
+  TN: 'Noche',
+};
+
+function turnoLabelToCode(turno?: string, explicitCode?: string): string {
+  if (explicitCode && explicitCode.trim()) return explicitCode.trim().slice(0, 2).toUpperCase();
+  const t = (turno || '').toLowerCase();
+  if (t.includes('tard')) return 'T';
+  if (t.includes('vesp')) return 'V';
+  if (t.includes('cent')) return 'TC';
+  if (t.includes('ext')) return 'TE';
+  if (t.includes('inter')) return 'TI';
+  if (t.includes('noch')) return 'N';
+  return 'M';
+}
+
+function mapTurnoCode(code?: string): Cargo['turno'] {
+  const clean = (code || '').trim().toUpperCase();
+  return TURNO_CODE_TO_LABEL[clean] || 'Mañana';
+}
+
+function formatCursoDisplay(raw?: string | null): string {
+  const val = (raw || '').trim();
+  if (!val) return '';
+  return val.includes('°') ? val : `${val}°`;
+}
+
+function formatSeccionDisplay(raw?: string | null): string {
+  const val = (raw || '').trim();
+  if (!val) return '';
+  return /^div\./i.test(val) ? val : `Div. ${val}`;
+}
 
 /**
  * Normaliza fechas provenientes de SISO (DD-MM-YYYY o DD/MM/YYYY) a formato estándar ISO YYYY-MM-DD.
@@ -51,7 +81,6 @@ const STORAGE_AUDIT_LOGS = 'cpem_audit_logs_v6';
 export function normalizeSisoDate(dateStr: string): string {
   if (!dateStr) return '';
   const trimmed = dateStr.trim();
-  // Match DD-MM-YYYY o DD/MM/YYYY
   const dmyMatch = trimmed.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
   if (dmyMatch) {
     const day = dmyMatch[1].padStart(2, '0');
@@ -59,7 +88,6 @@ export function normalizeSisoDate(dateStr: string): string {
     const year = dmyMatch[3];
     return `${year}-${month}-${day}`;
   }
-  // Match YYYY-MM-DD
   const ymdMatch = trimmed.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
   if (ymdMatch) {
     const year = ymdMatch[1];
@@ -78,15 +106,13 @@ export function cleanHeaderKey(h: string): string {
     .trim()
     .replace(/^["']|["']$/g, '')
     .toUpperCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Quita acentos (e.g. Í -> I)
-    .replace(/[._\-]/g, ' ') // Reemplaza puntos, guiones y guiones bajos por espacios
-    .replace(/\s+/g, ' ') // Colapsa espacios múltiples
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[._\-]/g, ' ')
+    .replace(/\s+/g, ' ')
     .trim();
 }
 
-/**
- * Encabezados oficiales de SISO (19 columnas en orden estándar)
- */
 export const STANDARD_SISO_HEADERS: string[] = [
   'ID',
   'NRO EMPLEADO',
@@ -116,9 +142,6 @@ export interface PreprocessedSisoResult {
   isHeaderAutoAssigned: boolean;
 }
 
-/**
- * Preprocesa texto de reporte SISO limpiando prefijos, encabezados con '.' o filas sin encabezados
- */
 export function preprocessSisoCsv(rawText: string): PreprocessedSisoResult {
   const rawLines = rawText.split(/\r?\n/);
   const cleanLines: string[] = [];
@@ -126,15 +149,12 @@ export function preprocessSisoCsv(rawText: string): PreprocessedSisoResult {
   for (const l of rawLines) {
     let line = l.trim();
     if (!line) continue;
-    // Remueve prefijos de copia como "- encabezados:" o "encabezados:"
     if (/^[-*•]?\s*encabezados\s*:\s*/i.test(line)) {
       line = line.replace(/^[-*•]?\s*encabezados\s*:\s*/i, '').trim();
     }
-    // Ignora líneas de texto como "ejemplos:", "ejemplo:", "notas:"
     if (/^[-*•]?\s*ejemplos?\s*:\s*$/i.test(line) || /^[-*•]?\s*notas?\s*:\s*$/i.test(line)) {
       continue;
     }
-    // Ignora comentarios
     if (line.startsWith('#') || line.startsWith('//')) continue;
 
     cleanLines.push(line);
@@ -149,7 +169,6 @@ export function preprocessSisoCsv(rawText: string): PreprocessedSisoResult {
     };
   }
 
-  // Detecta delimitador principal (; o ,)
   const firstWithSep = cleanLines.find((l) => l.includes(';') || l.includes(',')) || cleanLines[0];
   const semiCount = (firstWithSep.match(/;/g) || []).length;
   const commaCount = (firstWithSep.match(/,/g) || []).length;
@@ -158,11 +177,11 @@ export function preprocessSisoCsv(rawText: string): PreprocessedSisoResult {
   const firstLineTokens = parseCSVLine(cleanLines[0], delimiter);
   const firstLineUpper = cleanLines[0].toUpperCase();
 
-  const isHeaderRow = 
-    firstLineUpper.includes('ID') || 
-    firstLineUpper.includes('EMPLEADO') || 
-    firstLineUpper.includes('LEGAJO') || 
-    firstLineUpper.includes('NOMBRE') || 
+  const isHeaderRow =
+    firstLineUpper.includes('ID') ||
+    firstLineUpper.includes('EMPLEADO') ||
+    firstLineUpper.includes('LEGAJO') ||
+    firstLineUpper.includes('NOMBRE') ||
     firstLineUpper.includes('DESDE');
 
   let headers: string[] = [];
@@ -173,7 +192,6 @@ export function preprocessSisoCsv(rawText: string): PreprocessedSisoResult {
     headers = firstLineTokens.map(cleanHeaderKey);
     dataRows = cleanLines.slice(1);
   } else {
-    // Si no tiene encabezados, asigna los 19 encabezados oficiales de SISO
     headers = STANDARD_SISO_HEADERS.map(cleanHeaderKey);
     dataRows = cleanLines;
     isHeaderAutoAssigned = true;
@@ -182,9 +200,6 @@ export function preprocessSisoCsv(rawText: string): PreprocessedSisoResult {
   return { headers, dataRows, delimiter, isHeaderAutoAssigned };
 }
 
-/**
- * Obtiene el valor de un campo desde un registro buscando entre varias claves candidatas
- */
 export function getField(row: Record<string, string>, ...keys: string[]): string {
   for (const k of keys) {
     const cleanK = cleanHeaderKey(k);
@@ -195,9 +210,6 @@ export function getField(row: Record<string, string>, ...keys: string[]): string
   return '';
 }
 
-/**
- * Parsea una línea de CSV respetando comillas y detectando delimitador (';' o ',')
- */
 export function parseCSVLine(line: string, delimiter?: string): string[] {
   if (!delimiter) {
     const semiCount = (line.match(/;/g) || []).length;
@@ -263,19 +275,9 @@ export function formatDM(d: Date): string {
   return `${day}-${month}`;
 }
 
-/**
- * Formatea una fecha o string de fecha al formato visual institucional: dd-mm-YY
- * Mantiene en base de datos el formato estándar (YYYY-MM-DD o ISO).
- * Ejemplos:
- * "2026-10-19" -> "19-10-26"
- * "2026-03-05" -> "05-03-26"
- * "1982-07-03" -> "03-07-82"
- * "2026-10-19T08:00:00.000Z" -> "19-10-26"
- * "19/10/2026" -> "19-10-26"
- */
 export function formatDMY(dateInput?: string | Date | null): string {
   if (!dateInput) return '';
-  
+
   if (dateInput instanceof Date) {
     if (isNaN(dateInput.getTime())) return '';
     const day = String(dateInput.getDate()).padStart(2, '0');
@@ -287,10 +289,8 @@ export function formatDMY(dateInput?: string | Date | null): string {
   const str = String(dateInput).trim();
   if (!str) return '';
 
-  // Si contiene T (ISO timestamp)
   const cleanStr = str.split('T')[0].trim();
 
-  // Match YYYY-MM-DD o YYYY/MM/DD
   const ymdMatch = cleanStr.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
   if (ymdMatch) {
     const year = ymdMatch[1].slice(-2);
@@ -299,7 +299,6 @@ export function formatDMY(dateInput?: string | Date | null): string {
     return `${day}-${month}-${year}`;
   }
 
-  // Match DD-MM-YYYY o DD/MM/YYYY
   const dmy4Match = cleanStr.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
   if (dmy4Match) {
     const day = dmy4Match[1].padStart(2, '0');
@@ -308,7 +307,6 @@ export function formatDMY(dateInput?: string | Date | null): string {
     return `${day}-${month}-${year}`;
   }
 
-  // Match DD-MM-YY o DD/MM/YY
   const dmy2Match = cleanStr.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{2})$/);
   if (dmy2Match) {
     const day = dmy2Match[1].padStart(2, '0');
@@ -328,9 +326,6 @@ export function formatDMY(dateInput?: string | Date | null): string {
   return str;
 }
 
-/**
- * Formatea fecha y hora al formato visual institucional: dd-mm-YY HH:MM hs
- */
 export function formatDateTimeDMY(dateInput?: string | Date | null): string {
   if (!dateInput) return '';
   const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
@@ -342,26 +337,6 @@ export function formatDateTimeDMY(dateInput?: string | Date | null): string {
   const mins = String(d.getMinutes()).padStart(2, '0');
   return `${day}-${month}-${year} ${hours}:${mins} hs`;
 }
-
-// Base de datos oficial sembrada: Cargos (424), Agentes (512), Puestos (424), Puestos_Cargos Interinos (421), Tipos de Licencias (230), SISO (4.329)
-export const INITIAL_AGENTS: Agent[] = [...SEED_AGENTES];
-export const INITIAL_CARGOS: Cargo[] = [...SEED_CARGOS];
-export const INITIAL_PUESTOS: Puesto[] = [...SEED_PUESTOS];
-export const INITIAL_PUESTOS_CARGOS: PuestoCargo[] = [...SEED_PUESTOS_CARGOS];
-export const INITIAL_LICENSE_TYPES: LicenseType[] = [...SEED_TIPOS_LICENCIAS];
-export const INITIAL_SISO_LICENSES: SisoLicense[] = [...SEED_SISO_LICENSES];
-export const INITIAL_SISO_IMPORTS: SisoImportHistory[] = [
-  {
-    id: 'siso-seed-cpe-2026',
-    fecha: '2026-11-04T00:00:00.000Z',
-    nombreArchivo: '1793794663.csv (Auditorías SISO Oficiales)',
-    cantidadDetectados: 4329,
-    registrosNuevos: 4329,
-    registrosActualizados: 0,
-    usuario: 'cpem25oficial@gmail.com',
-    errores: [],
-  },
-];
 
 class DataService {
   private agents: Agent[] = [];
@@ -376,10 +351,23 @@ class DataService {
   private initialized = false;
   private isLoaded = false;
   private loadPromise: Promise<void> | null = null;
+  private realtimeSetup = false;
+  private refreshDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private listeners: Array<() => void> = [];
 
   constructor() {
-    this.loadFromStorage();
+    this.purgeLegacyCache();
+  }
+
+  private purgeLegacyCache() {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      for (const key of LEGACY_STORAGE_KEYS) {
+        localStorage.removeItem(key);
+      }
+    } catch {
+      // Ignore storage access restrictions
+    }
   }
 
   public subscribe(fn: () => void): () => void {
@@ -403,198 +391,132 @@ class DataService {
     return this.isLoaded;
   }
 
-  private loadFromStorage() {
-    try {
-      // Purga estricta de cachés mock / viejos de versiones de desarrollo previas
-      if (typeof localStorage !== 'undefined') {
-        const storedAgents = localStorage.getItem(STORAGE_AGENTS);
-        if (storedAgents && (storedAgents.includes('Perez, Juan') || storedAgents.includes('1042'))) {
-          localStorage.removeItem(STORAGE_AGENTS);
-          localStorage.removeItem(STORAGE_CARGOS);
-          localStorage.removeItem(STORAGE_PUESTOS);
-          localStorage.removeItem(STORAGE_PUESTOS_CARGOS);
-          localStorage.removeItem(STORAGE_REQUESTS);
-        }
-      }
+  private async fetchAllRows<T = any>(
+    table: string,
+    orderCol: string,
+    ascending = true,
+    secondaryOrderCol?: string
+  ): Promise<{ data: T[] | null; error: any }> {
+    const pageSize = 1000;
+    let from = 0;
+    const allRows: T[] = [];
 
-      const storedAgents = localStorage.getItem(STORAGE_AGENTS);
-      if (storedAgents) {
-        const parsed: Agent[] = JSON.parse(storedAgents);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0 && !parsed.some((a) => a.employeeNumber === '1042')) {
-          this.agents = parsed;
-        } else {
-          this.agents = [];
-        }
-      } else {
-        this.agents = [];
+    while (true) {
+      let query = supabase.from(table).select('*').order(orderCol, { ascending });
+      if (secondaryOrderCol) {
+        query = query.order(secondaryOrderCol, { ascending: true });
       }
-
-      const storedCargos = localStorage.getItem(STORAGE_CARGOS);
-      if (storedCargos) {
-        const parsed: Cargo[] = JSON.parse(storedCargos);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          this.cargos = parsed;
-        } else {
-          this.cargos = [];
-        }
-      } else {
-        this.cargos = [];
+      const { data, error } = await query.range(from, from + pageSize - 1);
+      if (error) {
+        return { data: null, error };
       }
-
-      const storedPuestos = localStorage.getItem(STORAGE_PUESTOS);
-      if (storedPuestos) {
-        const parsed: Puesto[] = JSON.parse(storedPuestos);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          this.puestos = parsed;
-        } else {
-          this.puestos = [];
-        }
-      } else {
-        this.puestos = [];
+      if (!data || data.length === 0) {
+        break;
       }
-
-      const storedPuestosCargos = localStorage.getItem(STORAGE_PUESTOS_CARGOS);
-      if (storedPuestosCargos) {
-        const parsed: PuestoCargo[] = JSON.parse(storedPuestosCargos);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          this.puestosCargos = parsed;
-        } else {
-          this.puestosCargos = [];
-        }
-      } else {
-        this.puestosCargos = [];
+      allRows.push(...(data as T[]));
+      if (data.length < pageSize) {
+        break;
       }
-
-      const storedTypes = localStorage.getItem(STORAGE_TYPES);
-      if (storedTypes) {
-        const parsed: LicenseType[] = JSON.parse(storedTypes);
-        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
-          this.licenseTypes = parsed;
-        } else {
-          this.licenseTypes = [];
-        }
-      } else {
-        this.licenseTypes = [];
-      }
-
-      const storedSiso = localStorage.getItem(STORAGE_SISO_LICENSES);
-      if (storedSiso) {
-        const parsed: SisoLicense[] = JSON.parse(storedSiso);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          this.sisoLicenses = parsed.filter((s) => s.importId !== 'import-seed-1');
-        } else {
-          this.sisoLicenses = [];
-        }
-      } else {
-        this.sisoLicenses = [];
-      }
-
-      const storedImports = localStorage.getItem(STORAGE_SISO_IMPORTS);
-      if (storedImports) {
-        const parsed: SisoImportHistory[] = JSON.parse(storedImports);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          this.sisoImports = parsed.filter((i) => i.id !== 'import-seed-1');
-        } else {
-          this.sisoImports = [];
-        }
-      } else {
-        this.sisoImports = [];
-      }
-
-      this.auditLogs = JSON.parse(localStorage.getItem(STORAGE_AUDIT_LOGS) || 'null') || [];
-      
-      const storedReqs = localStorage.getItem(STORAGE_REQUESTS);
-      if (storedReqs) {
-        const parsed: LicenseRequest[] = JSON.parse(storedReqs);
-        this.requests = Array.isArray(parsed)
-          ? parsed.filter(
-              (r) =>
-                r.id !== 'SOL-2026-001' &&
-                r.id !== 'SOL-2026-002' &&
-                r.id !== 'SOL-2026-003' &&
-                r.employeeNumber !== '1042' &&
-                r.employeeNumber !== '3118' &&
-                r.employeeNumber !== '4092'
-            )
-          : [];
-      } else {
-        this.requests = [];
-      }
-    } catch {
-      this.agents = [];
-      this.cargos = [];
-      this.puestos = [];
-      this.puestosCargos = [];
-      this.licenseTypes = [];
-      this.sisoLicenses = [];
-      this.sisoImports = [];
-      this.requests = [];
+      from += pageSize;
     }
+
+    return { data: allRows, error: null };
   }
 
-  private generateInitialRequests(): LicenseRequest[] {
-    return [];
+  private isPrimaryKeyViolation(error: any, table: string): boolean {
+    if (!error) return false;
+    const msg = `${error.message || ''} ${error.details || ''}`.toLowerCase();
+    return error.code === '23505' && (msg.includes(`${table}_pkey`) || msg.includes('_pkey'));
   }
 
-  private safeSetLocalStorage(key: string, value: string) {
-    if (typeof localStorage === 'undefined') return;
-    try {
-      localStorage.setItem(key, value);
-    } catch (err) {
-      // Si se excede la cuota de localStorage (~5MB), purgar cachés pesados heredados para evitar bloqueos
-      try {
-        localStorage.removeItem(STORAGE_SISO_LICENSES);
-        localStorage.removeItem(STORAGE_REQUESTS);
-        localStorage.removeItem(STORAGE_AUDIT_LOGS);
-        localStorage.removeItem(STORAGE_AGENTS);
-        localStorage.removeItem(STORAGE_CARGOS);
-        localStorage.removeItem(STORAGE_PUESTOS);
-        localStorage.removeItem(STORAGE_PUESTOS_CARGOS);
-        localStorage.setItem(key, value);
-      } catch {
-        // La aplicación opera directamente contra Supabase; ignorar fallos de caché local
-        console.warn(`Aviso de caché local (${key}): cuota excedida, operando directo con Supabase.`);
+  private async insertWithIdentityFallback<T = any>(
+    table: string,
+    pkColumn: string,
+    payload: Record<string, any>
+  ): Promise<{ data: T | null; error: any }> {
+    const firstAttempt = await supabase.from(table).insert(payload).select().single();
+    if (!firstAttempt.error) {
+      return { data: firstAttempt.data as T, error: null };
+    }
+
+    if (!this.isPrimaryKeyViolation(firstAttempt.error, table)) {
+      return { data: null, error: firstAttempt.error };
+    }
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const { data: maxRows, error: maxErr } = await supabase
+        .from(table)
+        .select(pkColumn)
+        .order(pkColumn, { ascending: false })
+        .limit(1);
+
+      if (maxErr) {
+        return { data: null, error: maxErr };
+      }
+
+      const currentMax = maxRows && maxRows.length > 0 ? Number((maxRows[0] as any)[pkColumn]) || 0 : 0;
+      const nextId = currentMax + 1 + attempt;
+
+      const retry = await supabase
+        .from(table)
+        .insert({ ...payload, [pkColumn]: nextId })
+        .select()
+        .single();
+
+      if (!retry.error) {
+        return { data: retry.data as T, error: null };
+      }
+
+      if (!this.isPrimaryKeyViolation(retry.error, table)) {
+        return { data: null, error: retry.error };
       }
     }
+
+    return { data: null, error: firstAttempt.error };
   }
 
-  private saveAgents() {
-    this.safeSetLocalStorage(STORAGE_AGENTS, JSON.stringify(this.agents));
-  }
-  private saveCargos() {
-    this.safeSetLocalStorage(STORAGE_CARGOS, JSON.stringify(this.cargos));
-  }
-  private savePuestos() {
-    this.safeSetLocalStorage(STORAGE_PUESTOS, JSON.stringify(this.puestos));
-  }
-  private savePuestosCargos() {
-    this.safeSetLocalStorage(STORAGE_PUESTOS_CARGOS, JSON.stringify(this.puestosCargos));
-  }
-  private saveLicenseTypes() {
-    this.safeSetLocalStorage(STORAGE_TYPES, JSON.stringify(this.licenseTypes));
-  }
-  private saveRequests() {
-    // Nunca persistir archivos/firmas en base64 ("data:...") dentro de localStorage para no exceder la cuota de 5MB
-    const lightweightRequests = this.requests.map((r) => ({
-      ...r,
-      signatureDataUrl: r.signatureDataUrl && r.signatureDataUrl.startsWith('data:') ? '' : r.signatureDataUrl,
-      justificationDataUrl:
-        r.justificationDataUrl && r.justificationDataUrl.startsWith('data:') ? undefined : r.justificationDataUrl,
-    }));
-    this.safeSetLocalStorage(STORAGE_REQUESTS, JSON.stringify(lightweightRequests));
-  }
-  private saveSisoLicenses() {
-    if (this.sisoLicenses.length > 500) {
-      if (typeof localStorage !== 'undefined') localStorage.removeItem(STORAGE_SISO_LICENSES);
-      return;
+  private async insertManyWithIdentityFallback<T = any>(
+    table: string,
+    pkColumn: string,
+    rows: Record<string, any>[]
+  ): Promise<{ data: T[] | null; error: any }> {
+    if (rows.length === 0) return { data: [], error: null };
+
+    const firstAttempt = await supabase.from(table).insert(rows).select();
+    if (!firstAttempt.error) {
+      return { data: (firstAttempt.data || []) as T[], error: null };
     }
-    this.safeSetLocalStorage(STORAGE_SISO_LICENSES, JSON.stringify(this.sisoLicenses));
-  }
-  private saveSisoImports() {
-    this.safeSetLocalStorage(STORAGE_SISO_IMPORTS, JSON.stringify(this.sisoImports));
-  }
-  private saveAuditLogs() {
-    this.safeSetLocalStorage(STORAGE_AUDIT_LOGS, JSON.stringify(this.auditLogs.slice(0, 200)));
+
+    if (!this.isPrimaryKeyViolation(firstAttempt.error, table)) {
+      return { data: null, error: firstAttempt.error };
+    }
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const { data: maxRows, error: maxErr } = await supabase
+        .from(table)
+        .select(pkColumn)
+        .order(pkColumn, { ascending: false })
+        .limit(1);
+
+      if (maxErr) {
+        return { data: null, error: maxErr };
+      }
+
+      const currentMax = maxRows && maxRows.length > 0 ? Number((maxRows[0] as any)[pkColumn]) || 0 : 0;
+      const startId = currentMax + 1 + attempt * rows.length;
+      const rowsWithIds = rows.map((r, idx) => ({ ...r, [pkColumn]: startId + idx }));
+
+      const retry = await supabase.from(table).insert(rowsWithIds).select();
+      if (!retry.error) {
+        return { data: (retry.data || []) as T[], error: null };
+      }
+
+      if (!this.isPrimaryKeyViolation(retry.error, table)) {
+        return { data: null, error: retry.error };
+      }
+    }
+
+    return { data: null, error: firstAttempt.error };
   }
 
   public async initialize(force = false): Promise<void> {
@@ -605,63 +527,165 @@ class DataService {
       this.initialized = true;
       await this.refreshFromSupabase();
       this.setupRealtimeSubscriptions();
+      // Cargar SISO en segundo plano sin bloquear el arranque inicial
+      this.refreshSisoFromSupabase().catch((err) => {
+        console.warn('Error cargando SISO en segundo plano:', err);
+      });
     })();
 
     return this.loadPromise;
   }
 
+  private mapDbAgent(a: any): Agent {
+    return {
+      id: `ag-${a.agente_id}`,
+      agente_id: a.agente_id,
+      apellidos: a.apellido || '',
+      apellido: a.apellido || '',
+      nombres: a.nombre || '',
+      nombre: a.nombre || '',
+      fullName: `${a.apellido || ''}, ${a.nombre || ''}`.trim(),
+      employeeNumber: String(a.legajo || ''),
+      legajo: a.legajo,
+      dni: String(a.dni || ''),
+      telefono: a.telefono || '',
+      email: a.email || '',
+      fechaNacimiento: a.fecha_nac || '',
+      fecha_nac: a.fecha_nac || '',
+      lugarNacimiento: a.lugar_nacimiento || '',
+      lugar_nacimiento: a.lugar_nacimiento || '',
+      domicilio: a.domicilio || '',
+      titulo: a.titulo || '',
+      activo: a.activo !== false,
+      hasAssignedPost: false,
+      createdAt: a.created_at || new Date().toISOString(),
+    };
+  }
+
+  private mapDbCargo(c: any, horariosByCargoId: Map<number, any[]>): Cargo {
+    const cargoHorariosList = horariosByCargoId.get(Number(c.cargo_id)) || [];
+    const regularHorarios = cargoHorariosList
+      .filter((h) => !h.articulacion)
+      .map((h) => ({
+        id: `horario-${h.horario_id}`,
+        horario_id: h.horario_id,
+        cargo_id: h.cargo_id,
+        dia: h.dia,
+        horaIngreso: (h.hora_desde || '').slice(0, 5),
+        horaSalida: (h.hora_hasta || '').slice(0, 5),
+        articulacion: false,
+      }));
+
+    const artHorarios = cargoHorariosList.filter((h) => h.articulacion);
+    const primerHorarioArt =
+      artHorarios.length > 0
+        ? {
+            id: `horario-${artHorarios[0].horario_id}`,
+            horario_id: artHorarios[0].horario_id,
+            cargo_id: artHorarios[0].cargo_id,
+            dia: artHorarios[0].dia,
+            horaIngreso: (artHorarios[0].hora_desde || '').slice(0, 5),
+            horaSalida: (artHorarios[0].hora_hasta || '').slice(0, 5),
+            articulacion: true,
+          }
+        : undefined;
+
+    const horariosArticulacionList = artHorarios.map((h) => ({
+      id: `horario-${h.horario_id}`,
+      horario_id: h.horario_id,
+      cargo_id: h.cargo_id,
+      dia: h.dia,
+      horaIngreso: (h.hora_desde || '').slice(0, 5),
+      horaSalida: (h.hora_hasta || '').slice(0, 5),
+      articulacion: true,
+    }));
+
+    return {
+      id: `cargo-${c.cargo_id}`,
+      cargo_id: c.cargo_id,
+      secuencia: String(c.secuencia ?? ''),
+      turno: mapTurnoCode(c.turno),
+      turno_codigo: c.turno,
+      curso: formatCursoDisplay(c.curso),
+      curso_raw: c.curso || '',
+      seccion: formatSeccionDisplay(c.seccion),
+      seccion_raw: c.seccion || '',
+      descripcion: c.descripccion || '',
+      obligaciones: String(c.obligaciones || 1),
+      area: '',
+      area_id: c.area_id ?? null,
+      horarios: regularHorarios,
+      tieneArticulacion: Boolean(c.tiene_art) || artHorarios.length > 0,
+      tiene_art: Boolean(c.tiene_art) || artHorarios.length > 0,
+      horarioArticulacion: primerHorarioArt,
+      horariosArticulacion: horariosArticulacionList,
+      activo: c.activo !== false,
+      ordenVisual: c.orden_visual ?? c.cargo_id ?? 1,
+      orden_visual: c.orden_visual ?? c.cargo_id ?? 1,
+      createdAt: c.created_at || new Date().toISOString(),
+    };
+  }
+
+  private mapDbLicenseType(t: any): LicenseType {
+    return {
+      id: `type-${t.tipo_licencia_id}`,
+      tipo_licencia_id: t.tipo_licencia_id,
+      code: t.codigo || '',
+      codigo: t.codigo || '',
+      name: t.nombre || '',
+      nombre: t.nombre || '',
+      category: (t.categoria as any) || 'Corta duración',
+      categoria: t.categoria || 'Corta duración',
+      sinLimite: Boolean(t.sin_limite),
+      sin_limite: Boolean(t.sin_limite),
+      maxDaysPerYear: t.max_dias_anio,
+      max_dias_anio: t.max_dias_anio,
+      diasTotales: t.max_dias_anio,
+      maxConsecutiveDays: t.max_dias_seguidos,
+      max_dias_seguidos: t.max_dias_seguidos,
+      diasMensuales: t.max_dias_seguidos,
+      requiresJustification: Boolean(t.requiere_justificacion),
+      requiere_justificacion: Boolean(t.requiere_justificacion),
+      requiresObligations: t.requiere_obligaciones !== false,
+      requiere_obligaciones: t.requiere_obligaciones !== false,
+      description: t.descripccion || '',
+      descripccion: t.descripccion || '',
+      active: t.activo !== false,
+      activo: t.activo !== false,
+    };
+  }
+
   public async refreshFromSupabase(): Promise<void> {
     try {
-      // 1. Sincronizar Agentes desde Supabase PostgreSQL
-      const { data: dbAgentes, error: agErr } = await supabase
-        .from('agentes')
-        .select('*')
-        .order('agente_id', { ascending: true });
-
-      if (agErr) {
-        console.warn('Error fetching agentes from Supabase:', agErr.message);
-      } else if (dbAgentes && dbAgentes.length > 0) {
-        this.agents = dbAgentes.map((a: any) => ({
-          id: `ag-${a.agente_id}`,
-          agente_id: a.agente_id,
-          apellidos: a.apellido || '',
-          apellido: a.apellido || '',
-          nombres: a.nombre || '',
-          nombre: a.nombre || '',
-          fullName: `${a.apellido || ''}, ${a.nombre || ''}`.trim(),
-          employeeNumber: String(a.legajo || ''),
-          legajo: a.legajo,
-          dni: String(a.dni || ''),
-          telefono: a.telefono || '',
-          email: a.email || '',
-          fechaNacimiento: a.fecha_nac || '',
-          fecha_nac: a.fecha_nac || '',
-          lugarNacimiento: a.lugar_nacimiento || '',
-          lugar_nacimiento: a.lugar_nacimiento || '',
-          domicilio: a.domicilio || '',
-          titulo: a.titulo || '',
-          activo: a.activo !== false,
-          hasAssignedPost: false,
-          createdAt: a.created_at || new Date().toISOString(),
-        }));
-        this.saveAgents();
-      }
-
-      // 2. Sincronizar Cargos y Horarios desde Supabase PostgreSQL
-      const [{ data: dbCargos }, { data: dbHorarios }] = await Promise.all([
-        supabase
-          .from('cargos')
-          .select('*')
-          .order('orden_visual', { ascending: true }),
-        supabase
-          .from('horarios_cargos')
-          .select('*')
-          .order('horario_id', { ascending: true })
+      const [
+        agentesRes,
+        cargosRes,
+        horariosRes,
+        puestosRes,
+        puestosCargosRes,
+        typesRes,
+      ] = await Promise.all([
+        this.fetchAllRows('agentes', 'agente_id', true),
+        this.fetchAllRows('cargos', 'orden_visual', true, 'cargo_id'),
+        this.fetchAllRows('horarios_cargos', 'horario_id', true),
+        this.fetchAllRows('puestos', 'puesto_id', true),
+        this.fetchAllRows('puestos_cargos', 'orden', true, 'puestos_cargos_id'),
+        this.fetchAllRows('tipos_licencias', 'tipo_licencia_id', true),
       ]);
 
+      // 1. Agentes
+      if (agentesRes.error) {
+        console.error('Error fetching agentes from Supabase:', agentesRes.error.message);
+      } else if (agentesRes.data) {
+        this.agents = agentesRes.data.map((a) => this.mapDbAgent(a));
+      }
+
+      // 2. Horarios + Cargos (solo activos)
       const horariosByCargoId = new Map<number, any[]>();
-      if (dbHorarios && dbHorarios.length > 0) {
-        for (const h of dbHorarios) {
+      if (horariosRes.error) {
+        console.error('Error fetching horarios_cargos from Supabase:', horariosRes.error.message);
+      } else if (horariosRes.data) {
+        for (const h of horariosRes.data) {
           const cid = Number(h.cargo_id);
           if (!horariosByCargoId.has(cid)) {
             horariosByCargoId.set(cid, []);
@@ -670,95 +694,36 @@ class DataService {
         }
       }
 
-      if (dbCargos && dbCargos.length > 0) {
-        this.cargos = dbCargos.map((c: any) => {
-          const cargoHorariosList = horariosByCargoId.get(c.cargo_id) || [];
-          const regularHorarios = cargoHorariosList
-            .filter((h) => !h.articulacion)
-            .map((h) => ({
-              id: `horario-${h.horario_id}`,
-              horario_id: h.horario_id,
-              cargo_id: h.cargo_id,
-              dia: h.dia,
-              horaIngreso: (h.hora_desde || '').slice(0, 5),
-              horaSalida: (h.hora_hasta || '').slice(0, 5),
-              articulacion: false,
-            }));
+      if (cargosRes.error) {
+        console.error('Error fetching cargos from Supabase:', cargosRes.error.message);
+      } else if (cargosRes.data) {
+        this.cargos = cargosRes.data
+          .filter((c: any) => c.activo !== false)
+          .map((c: any) => this.mapDbCargo(c, horariosByCargoId));
+      }
 
-          const artHorarios = cargoHorariosList.filter((h) => h.articulacion);
-          const primerHorarioArt = artHorarios.length > 0 ? {
-            id: `horario-${artHorarios[0].horario_id}`,
-            horario_id: artHorarios[0].horario_id,
-            cargo_id: artHorarios[0].cargo_id,
-            dia: artHorarios[0].dia,
-            horaIngreso: (artHorarios[0].hora_desde || '').slice(0, 5),
-            horaSalida: (artHorarios[0].hora_hasta || '').slice(0, 5),
-            articulacion: true,
-          } : undefined;
-
-          const horariosArticulacionList = artHorarios.map((h) => ({
-            id: `horario-${h.horario_id}`,
-            horario_id: artHorarios[0].horario_id,
-            cargo_id: artHorarios[0].cargo_id,
-            dia: h.dia,
-            horaIngreso: (h.hora_desde || '').slice(0, 5),
-            horaSalida: (h.hora_hasta || '').slice(0, 5),
-            articulacion: true,
+      // 3. Puestos (solo activos)
+      if (puestosRes.error) {
+        console.error('Error fetching puestos from Supabase:', puestosRes.error.message);
+      } else if (puestosRes.data) {
+        this.puestos = puestosRes.data
+          .filter((p: any) => p.activo !== false)
+          .map((p: any) => ({
+            id: `puesto-${p.puesto_id}`,
+            puesto_id: p.puesto_id,
+            cargoId: `cargo-${p.cargo_id}`,
+            cargo_id: p.cargo_id,
+            agentesAsignados: [],
+            activo: p.activo !== false,
+            createdAt: p.created_at || new Date().toISOString(),
           }));
-
-          return {
-            id: `cargo-${c.cargo_id}`,
-            cargo_id: c.cargo_id,
-            secuencia: String(c.secuencia),
-            turno: c.turno === 'M' ? 'Mañana' : c.turno === 'T' ? 'Tarde' : c.turno === 'V' ? 'Vespertino' : 'Mañana',
-            turno_codigo: c.turno,
-            curso: `${c.curso}°`,
-            curso_raw: c.curso,
-            seccion: `Div. ${c.seccion}`,
-            seccion_raw: c.seccion,
-            descripcion: c.descripccion,
-            obligaciones: String(c.obligaciones || 1),
-            area: '',
-            horarios: regularHorarios,
-            tieneArticulacion: c.tiene_art || artHorarios.length > 0,
-            tiene_art: c.tiene_art || artHorarios.length > 0,
-            horarioArticulacion: primerHorarioArt,
-            horariosArticulacion: horariosArticulacionList,
-            activo: c.activo !== false,
-            ordenVisual: c.orden_visual || 1,
-            orden_visual: c.orden_visual || 1,
-            createdAt: c.created_at || new Date().toISOString(),
-          };
-        });
-        this.saveCargos();
       }
 
-      // 3. Sincronizar Puestos desde Supabase
-      const { data: dbPuestos } = await supabase
-        .from('puestos')
-        .select('*')
-        .order('puesto_id', { ascending: true });
-
-      if (dbPuestos && dbPuestos.length > 0) {
-        this.puestos = dbPuestos.map((p: any) => ({
-          id: `puesto-${p.puesto_id}`,
-          puesto_id: p.puesto_id,
-          cargoId: `cargo-${p.cargo_id}`,
-          cargo_id: p.cargo_id,
-          agentesAsignados: [],
-          activo: p.activo !== false,
-          createdAt: p.created_at || new Date().toISOString(),
-        }));
-      }
-
-      // 4. Sincronizar Puestos Cargos (Asignaciones Interinas / Titulares)
-      const { data: dbPC } = await supabase
-        .from('puestos_cargos')
-        .select('*')
-        .order('puestos_cargos_id', { ascending: true });
-
-      if (dbPC && dbPC.length > 0) {
-        this.puestosCargos = dbPC.map((pc: any) => ({
+      // 4. Puestos Cargos (asignaciones)
+      if (puestosCargosRes.error) {
+        console.error('Error fetching puestos_cargos from Supabase:', puestosCargosRes.error.message);
+      } else if (puestosCargosRes.data) {
+        this.puestosCargos = puestosCargosRes.data.map((pc: any) => ({
           puestos_cargos_id: pc.puestos_cargos_id,
           puesto_id: pc.puesto_id,
           agente_id: pc.agente_id,
@@ -768,10 +733,12 @@ class DataService {
           activo: pc.activo !== false,
           detalle: pc.detalle,
         }));
-        this.savePuestosCargos();
 
         for (const p of this.puestos) {
-          const asigs = this.puestosCargos.filter((pc) => pc.puesto_id === p.puesto_id && pc.activo);
+          const asigs = this.puestosCargos
+            .filter((pc) => pc.puesto_id === p.puesto_id && pc.activo !== false)
+            .sort((a, b) => (a.orden || 1) - (b.orden || 1));
+
           p.agentesAsignados = asigs.map((asig) => ({
             agenteId: `ag-${asig.agente_id}`,
             orden: asig.orden,
@@ -780,35 +747,17 @@ class DataService {
             observacion: asig.detalle || undefined,
           }));
         }
-        this.savePuestos();
       }
 
-      // 5. Sincronizar Tipos de Licencias
-      const { data: dbTypes } = await supabase
-        .from('tipos_licencias')
-        .select('*')
-        .order('tipo_licencia_id', { ascending: true });
-
-      if (dbTypes && dbTypes.length > 0) {
-        this.licenseTypes = dbTypes.map((t: any): LicenseType => ({
-          id: `type-${t.tipo_licencia_id}`,
-          tipo_licencia_id: t.tipo_licencia_id,
-          code: t.codigo || '',
-          name: t.nombre || '',
-          category: (t.categoria as any) || 'Corta duración',
-          sinLimite: t.sin_limite || false,
-          maxDaysPerYear: t.max_dias_anio,
-          maxConsecutiveDays: t.max_dias_seguidos,
-          requiresJustification: t.requiere_justificacion || false,
-          requiresObligations: t.requiere_obligaciones !== false,
-          description: t.descripccion || '',
-          active: t.activo !== false,
-        }));
-        this.saveLicenseTypes();
+      // 5. Tipos de Licencias
+      if (typesRes.error) {
+        console.error('Error fetching tipos_licencias from Supabase:', typesRes.error.message);
+      } else if (typesRes.data) {
+        this.licenseTypes = typesRes.data.map((t: any) => this.mapDbLicenseType(t));
       }
 
-      // 6. Sincronizar Solicitudes de Licencia
-      await this.refreshRequestsFromSupabase();
+      // 6. Solicitudes de Licencias
+      await this.refreshRequestsFromSupabase(false);
 
       this.isLoaded = true;
       this.notifyListeners();
@@ -817,57 +766,108 @@ class DataService {
     }
   }
 
+  public async refreshSisoFromSupabase(): Promise<void> {
+    try {
+      const { data: dbSiso, error } = await this.fetchAllRows('siso_licencias', 'siso_id', false);
+      if (error) {
+        console.warn('Error fetching siso_licencias from Supabase:', error.message);
+        return;
+      }
+      if (dbSiso) {
+        this.sisoLicenses = dbSiso.map((s: any): SisoLicense => ({
+          id: s.id,
+          siso_id: s.siso_id,
+          nro_empleado: s.nro_empleado,
+          nroEmpleado: s.nro_empleado || '',
+          dni: s.dni || '',
+          nombre: s.nombre || '',
+          email: s.email || '',
+          tipo: s.tipo || '',
+          carga: s.carga || '',
+          fecha_desde: s.fecha_desde,
+          fecha_hasta: s.fecha_hasta,
+          desde: s.fecha_desde || '',
+          hasta: s.fecha_hasta || '',
+          dias: s.dias || '',
+          justifica: s.justifica || '',
+          cod_licencia: s.cod_licencia ? String(s.cod_licencia) : '',
+          codLicencia: s.cod_licencia ? String(s.cod_licencia) : '',
+          fecha_alta: s.fecha_alta,
+          fechaAlta: s.fecha_alta,
+          auditor: s.auditor,
+          patologia: s.patologia,
+          fecha_auditoria: s.fecha_auditoria,
+          fechaAuditoria: s.fecha_auditoria,
+          medico_interviniente: s.medico_interviniente,
+          medicoInterviniente: s.medico_interviniente,
+          matricula_medico_interviniente: s.matricula_medico_interviniente,
+          matriculaMedicoInterviniente: s.matricula_medico_interviniente,
+          establecimientos_o_sector: s.establecimientos_o_sector,
+          establecimientosOSector: s.establecimientos_o_sector,
+          fechaImportacion: s.created_at || new Date().toISOString(),
+          importId: 'import-supabase',
+        }));
+        this.notifyListeners();
+      }
+    } catch (e) {
+      console.warn('Error refreshing SISO from Supabase:', e);
+    }
+  }
+
+  private scheduleRefreshFromSupabase() {
+    if (this.refreshDebounceTimer) {
+      clearTimeout(this.refreshDebounceTimer);
+    }
+    this.refreshDebounceTimer = setTimeout(() => {
+      this.refreshFromSupabase();
+    }, 250);
+  }
+
   private setupRealtimeSubscriptions() {
+    if (this.realtimeSetup) return;
+    this.realtimeSetup = true;
     try {
       supabase
         .channel('cpem25_realtime_sync')
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'solicitud_licencias' },
-          () => {
-            this.refreshRequestsFromSupabase();
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'cargos' },
-          () => {
-            this.refreshFromSupabase();
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'horarios_cargos' },
-          () => {
-            this.refreshFromSupabase();
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'puestos_cargos' },
-          () => {
-            this.refreshFromSupabase();
-          }
-        )
-        .on(
-          'postgres_changes',
-          { event: '*', schema: 'public', table: 'agentes' },
-          () => {
-            this.refreshFromSupabase();
-          }
-        )
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'solicitud_licencias' }, () => {
+          this.refreshRequestsFromSupabase(true);
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'cargos' }, () => {
+          this.scheduleRefreshFromSupabase();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'horarios_cargos' }, () => {
+          this.scheduleRefreshFromSupabase();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'puestos' }, () => {
+          this.scheduleRefreshFromSupabase();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'puestos_cargos' }, () => {
+          this.scheduleRefreshFromSupabase();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'agentes' }, () => {
+          this.scheduleRefreshFromSupabase();
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'tipos_licencias' }, () => {
+          this.scheduleRefreshFromSupabase();
+        })
         .subscribe();
     } catch (e) {
       console.warn('Realtime subscription notice:', e);
     }
   }
 
-  public async refreshRequestsFromSupabase() {
+  public async refreshRequestsFromSupabase(notify = true) {
     try {
-      const { data: dbReqs } = await supabase
-        .from('solicitud_licencias')
-        .select('*')
-        .order('solicitud_licencia_id', { ascending: false });
+      const { data: dbReqs, error } = await this.fetchAllRows(
+        'solicitud_licencias',
+        'solicitud_licencia_id',
+        false
+      );
+
+      if (error) {
+        console.error('Error refreshing requests from Supabase:', error.message);
+        return;
+      }
 
       if (dbReqs) {
         const extractDriveId = (url?: string | null): string | undefined => {
@@ -884,13 +884,30 @@ class DataService {
           const sigDriveId = extractDriveId(sigUrl);
           const justDriveId = extractDriveId(justUrl);
 
+          const rawPosts = Array.isArray(row.puestos_id) ? row.puestos_id : [];
+          let postDescription = 'Cargos asignados';
+          if (rawPosts.length > 0 && rawPosts[0] !== 'ALL') {
+            const descs = rawPosts
+              .map((pid: string) => {
+                const p = this.puestos.find(
+                  (pu) => pu.id === pid || String(pu.puesto_id) === String(pid)
+                );
+                const c = p ? this.cargos.find((cg) => cg.id === p.cargoId) : null;
+                return c ? `${c.descripcion} (${c.curso} ${c.seccion})`.trim() : null;
+              })
+              .filter(Boolean);
+            if (descs.length > 0) {
+              postDescription = descs.join(' / ');
+            }
+          }
+
           return {
             id: row.codigo || `SOL-2026-${String(row.solicitud_licencia_id).padStart(3, '0')}`,
             employeeNumber: String(agent?.legajo || agent?.employeeNumber || ''),
             agentName: agent?.fullName || `Agente #${row.agente_id}`,
             agentDni: String(agent?.dni || ''),
-            postsSelection: Array.isArray(row.puestos_id) ? row.puestos_id.join(', ') : 'ALL',
-            postDescription: 'Cargos asignados',
+            postsSelection: rawPosts.length > 0 ? rawPosts.join(', ') : 'ALL',
+            postDescription,
             dateFrom: row.fecha_desde,
             dateTo: row.fecha_hasta,
             isArticulation: row.articulacion || false,
@@ -908,37 +925,24 @@ class DataService {
             signatureDriveFileId: sigDriveId,
             status: (row.estado as LicenseStatus) || 'Pendiente',
             createdAt: row.created_at || row.fecha_carga || new Date().toISOString(),
+            deletedAt: row.deleted_at || undefined,
             source: 'Solicitud',
             historialEstados: [],
           };
         });
-        this.saveRequests();
+
+        if (notify) {
+          this.notifyListeners();
+        }
       }
     } catch (e) {
       console.warn('Error refreshing requests from Supabase:', e);
     }
   }
 
-  private async batchSeedCollection<T extends { id: string }>(collName: string, items: T[], chunkSize = 300) {
-    try {
-      for (let i = 0; i < items.length; i += chunkSize) {
-        const chunk = items.slice(i, i + chunkSize);
-        const batch = writeBatch(db);
-        for (const item of chunk) {
-          const docRef = doc(db, collName, item.id);
-          batch.set(docRef, item);
-        }
-        await batch.commit();
-      }
-    } catch (e) {
-      console.warn(`Batch seed for ${collName} failed gracefully:`, e);
-    }
-  }
-
-  // AGENTES CRUD (Section 4)
+  // AGENTES CRUD
   public getAgents(): Agent[] {
     return this.agents.map((ag) => {
-      // Attach current posts for easy frontend presentation
       const assignedPuestos = this.puestos.filter((p) =>
         p.agentesAsignados.some(
           (asig) =>
@@ -980,9 +984,8 @@ class DataService {
     const trimmed = employeeNumber.trim().toLowerCase();
     if (!trimmed) return null;
 
-    // 1. Check in memory
     const list = this.getAgents();
-    let found = list.find(
+    const found = list.find(
       (a) =>
         a.employeeNumber.toLowerCase() === trimmed ||
         a.dni.toLowerCase() === trimmed ||
@@ -991,7 +994,6 @@ class DataService {
     );
     if (found) return found;
 
-    // 2. Query Supabase PostgreSQL directly in real-time
     try {
       const numVal = parseInt(trimmed.replace(/\D/g, ''), 10);
       let q = supabase.from('agentes').select('*');
@@ -1011,7 +1013,7 @@ class DataService {
     return null;
   }
 
-  public createAgent(data: Omit<Agent, 'id' | 'fullName' | 'hasAssignedPost'>): Agent {
+  public async createAgent(data: Omit<Agent, 'id' | 'fullName' | 'hasAssignedPost'>): Promise<Agent> {
     const existsNum = this.agents.some((a) => a.employeeNumber === data.employeeNumber.trim());
     if (existsNum) {
       throw new Error(`Ya existe un agente registrado con el número de empleado ${data.employeeNumber}.`);
@@ -1021,135 +1023,134 @@ class DataService {
       throw new Error(`Ya existe un agente registrado con el DNI ${data.dni}.`);
     }
 
-    const id = 'agent-' + Date.now();
-    const fullName = `${data.apellidos.trim()}, ${data.nombres.trim()}`;
-    const newAgent: Agent = {
-      ...data,
-      id,
-      apellidos: data.apellidos.trim(),
-      nombres: data.nombres.trim(),
-      fullName,
-      employeeNumber: data.employeeNumber.trim(),
-      dni: data.dni.trim(),
-      telefono: data.telefono.trim(),
-      email: data.email.trim().toLowerCase(),
+    const dniNum = parseInt(data.dni.replace(/\D/g, ''), 10);
+    const legajoNum = parseInt(data.employeeNumber.replace(/\D/g, ''), 10);
+    if (isNaN(dniNum) || dniNum <= 0) {
+      throw new Error('El DNI debe ser numérico y válido.');
+    }
+    if (isNaN(legajoNum) || legajoNum <= 0) {
+      throw new Error('El número de empleado / legajo debe ser numérico y válido.');
+    }
+
+    const { data: insData, error } = await this.insertWithIdentityFallback('agentes', 'agente_id', {
+      dni: dniNum,
+      legajo: legajoNum,
+      apellido: data.apellidos.trim().toUpperCase(),
+      nombre: data.nombres.trim().toUpperCase(),
+      telefono: (data.telefono || '').trim(),
+      email: (data.email || '').trim().toLowerCase(),
+      fecha_nac: data.fecha_nac || data.fechaNacimiento || null,
+      lugar_nacimiento: data.lugarNacimiento?.trim() || null,
+      domicilio: data.domicilio?.trim() || '',
+      titulo: data.titulo?.trim() || '',
       activo: true,
-      hasAssignedPost: false,
-      createdAt: new Date().toISOString(),
-    };
+    });
 
+    if (error || !insData) {
+      throw new Error(error?.message || 'Error al crear agente en Supabase.');
+    }
+
+    const newAgent = this.mapDbAgent(insData);
     this.agents.push(newAgent);
-    this.saveAgents();
-
-    // Persist directly to Supabase PostgreSQL (agentes)
-    const dniNum = parseInt(data.dni.replace(/\D/g, ''), 10) || 0;
-    const legajoNum = parseInt(data.employeeNumber.replace(/\D/g, ''), 10) || 0;
-
-    supabase
-      .from('agentes')
-      .insert({
-        dni: dniNum,
-        legajo: legajoNum,
-        apellido: data.apellidos.trim().toUpperCase(),
-        nombre: data.nombres.trim().toUpperCase(),
-        telefono: data.telefono.trim(),
-        email: data.email.trim().toLowerCase(),
-        fecha_nac: data.fecha_nac || data.fechaNacimiento || null,
-        domicilio: data.domicilio?.trim() || '',
-        titulo: data.titulo?.trim() || '',
-        activo: true,
-      })
-      .select()
-      .single()
-      .then(({ data: insData, error }) => {
-        if (insData) {
-          newAgent.agente_id = insData.agente_id;
-          newAgent.id = `ag-${insData.agente_id}`;
-          this.saveAgents();
-        }
-        if (error) console.warn('Supabase createAgent notice:', error.message);
-      });
-
     this.notifyListeners();
     return newAgent;
   }
 
-  public updateAgent(id: string, updates: Partial<Agent>): Agent {
+  public async updateAgent(id: string, updates: Partial<Agent>): Promise<Agent> {
     const index = this.agents.findIndex((a) => a.id === id);
     if (index === -1) throw new Error('Agente no encontrado.');
 
     const current = this.agents[index];
+    const numAgId = current.agente_id || parseInt(id.replace(/\D/g, ''), 10);
+    if (!numAgId || isNaN(numAgId)) {
+      throw new Error('Identificador de agente inválido en Supabase.');
+    }
+
+    const sbUpdates: Record<string, any> = {};
+    if (updates.apellidos !== undefined) sbUpdates.apellido = updates.apellidos.trim().toUpperCase();
+    if (updates.nombres !== undefined) sbUpdates.nombre = updates.nombres.trim().toUpperCase();
+    if (updates.employeeNumber !== undefined) {
+      const legNum = parseInt(updates.employeeNumber.replace(/\D/g, ''), 10);
+      if (!isNaN(legNum) && legNum > 0) sbUpdates.legajo = legNum;
+    }
+    if (updates.dni !== undefined) {
+      const dniNum = parseInt(updates.dni.replace(/\D/g, ''), 10);
+      if (!isNaN(dniNum) && dniNum > 0) sbUpdates.dni = dniNum;
+    }
+    if (updates.telefono !== undefined) sbUpdates.telefono = updates.telefono.trim();
+    if (updates.email !== undefined) sbUpdates.email = updates.email.trim().toLowerCase();
+    if (updates.fechaNacimiento !== undefined) {
+      sbUpdates.fecha_nac = updates.fechaNacimiento.trim() || null;
+    }
+    if (updates.lugarNacimiento !== undefined) {
+      sbUpdates.lugar_nacimiento = updates.lugarNacimiento.trim() || null;
+    }
+    if (updates.domicilio !== undefined) sbUpdates.domicilio = updates.domicilio.trim();
+    if (updates.titulo !== undefined) sbUpdates.titulo = updates.titulo.trim();
+    if (updates.activo !== undefined) sbUpdates.activo = updates.activo;
+
+    if (Object.keys(sbUpdates).length > 0) {
+      const { data: updatedRow, error } = await supabase
+        .from('agentes')
+        .update(sbUpdates)
+        .eq('agente_id', numAgId)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Error actualizando agente en Supabase: ${error.message}`);
+      }
+      if (updatedRow) {
+        this.agents[index] = this.mapDbAgent(updatedRow);
+        this.notifyListeners();
+        return this.agents[index];
+      }
+    }
+
     const apellidos = updates.apellidos !== undefined ? updates.apellidos.trim() : current.apellidos;
     const nombres = updates.nombres !== undefined ? updates.nombres.trim() : current.nombres;
-    const fullName = `${apellidos}, ${nombres}`;
-
     this.agents[index] = {
       ...current,
       ...updates,
       apellidos,
       nombres,
-      fullName,
+      fullName: `${apellidos}, ${nombres}`,
     };
-
-    this.saveAgents();
-
-    // Persist directly to Supabase PostgreSQL (agentes)
-    const numAgId = current.agente_id || parseInt(id.replace(/\D/g, ''), 10);
-    if (!isNaN(numAgId)) {
-      const sbUpdates: any = {};
-      if (updates.apellidos) sbUpdates.apellido = updates.apellidos.trim().toUpperCase();
-      if (updates.nombres) sbUpdates.nombre = updates.nombres.trim().toUpperCase();
-      if (updates.telefono !== undefined) sbUpdates.telefono = updates.telefono.trim();
-      if (updates.email !== undefined) sbUpdates.email = updates.email.trim().toLowerCase();
-      if (updates.domicilio !== undefined) sbUpdates.domicilio = updates.domicilio.trim();
-      if (updates.titulo !== undefined) sbUpdates.titulo = updates.titulo.trim();
-      if (updates.activo !== undefined) sbUpdates.activo = updates.activo;
-
-      if (Object.keys(sbUpdates).length > 0) {
-        supabase.from('agentes').update(sbUpdates).eq('agente_id', numAgId).then(({ error }) => {
-          if (error) console.warn('Supabase updateAgent notice:', error.message);
-        });
-      }
-    }
-
     this.notifyListeners();
     return this.agents[index];
   }
 
-  // Section 4 & 21: "Desactivar agente sin eliminar su historial"
-  public toggleAgentActive(id: string, activo: boolean): Agent {
+  public async toggleAgentActive(id: string, activo: boolean): Promise<Agent> {
     const index = this.agents.findIndex((a) => a.id === id);
     if (index === -1) throw new Error('Agente no encontrado.');
 
-    this.agents[index].activo = activo;
-    this.saveAgents();
-
     const numAgId = this.agents[index].agente_id || parseInt(id.replace(/\D/g, ''), 10);
-    if (!isNaN(numAgId)) {
-      supabase.from('agentes').update({ activo }).eq('agente_id', numAgId).then(({ error }) => {
-        if (error) console.warn('Supabase toggleAgentActive notice:', error.message);
-      });
+    if (!numAgId || isNaN(numAgId)) {
+      throw new Error('Identificador de agente inválido en Supabase.');
     }
 
+    const { error } = await supabase
+      .from('agentes')
+      .update({ activo })
+      .eq('agente_id', numAgId);
+
+    if (error) {
+      throw new Error(`Error al actualizar estado del agente en Supabase: ${error.message}`);
+    }
+
+    this.agents[index].activo = activo;
     this.notifyListeners();
     return this.agents[index];
   }
 
-  /**
-   * Importa agentes desde texto CSV siguiendo las reglas estrictas:
-   * 1. Lee las filas de abajo hacia arriba ("de abajo a arriba").
-   * 2. Toma únicamente los datos necesarios (Apellidos, Nombres, N° Empleado, DNI, Teléfono, Lugar y Fecha de Nacimiento).
-   * 3. Utiliza "Dirección de correo electrónico" como el email real.
-   * 4. Si ya existe, conserva el registro más reciente ("si ya existe toma el mas actual para registro final").
-   */
-  public importAgentsFromCSV(csvText: string): {
+  public async importAgentsFromCSV(csvText: string): Promise<{
     totalRows: number;
     uniqueParsed: number;
     newAdded: number;
     updated: number;
     duplicatesSkipped: number;
-  } {
-    const parseCSVLine = (line: string): string[] => {
+  }> {
+    const parseLine = (line: string): string[] => {
       const result: string[] = [];
       let current = '';
       let inQuotes = false;
@@ -1196,7 +1197,7 @@ class DataService {
     }
 
     let startIndex = 0;
-    const firstRow = parseCSVLine(lines[0]);
+    const firstRow = parseLine(lines[0]);
     if (
       firstRow.some(
         (col) =>
@@ -1212,9 +1213,8 @@ class DataService {
     const seenMap = new Map<string, Agent>();
     let duplicatesSkipped = 0;
 
-    // Iterar de abajo a arriba: la primera aparición es la más reciente
     for (let i = dataRows.length - 1; i >= 0; i--) {
-      const row = parseCSVLine(dataRows[i]);
+      const row = parseLine(dataRows[i]);
       if (row.length < 5) continue;
 
       const emailReal = clean(row[1]).toLowerCase();
@@ -1234,7 +1234,6 @@ class DataService {
       const keyDni = cleanDni ? `DNI_${cleanDni}` : null;
       const keyEmp = cleanEmpNum ? `EMP_${cleanEmpNum}` : null;
 
-      // Si ya fue visto desde abajo, se descarta la fila anterior (más antigua)
       if ((keyDni && seenMap.has(keyDni)) || (keyEmp && seenMap.has(keyEmp))) {
         duplicatesSkipped++;
         continue;
@@ -1266,26 +1265,38 @@ class DataService {
     let updated = 0;
 
     for (const newAg of uniqueList) {
-      const existingIdx = this.agents.findIndex(
+      const existing = this.agents.find(
         (a) =>
           (newAg.dni && a.dni.replace(/\D/g, '') === newAg.dni.replace(/\D/g, '')) ||
           (newAg.employeeNumber && a.employeeNumber === newAg.employeeNumber)
       );
 
-      if (existingIdx >= 0) {
-        this.agents[existingIdx] = {
-          ...this.agents[existingIdx],
-          ...newAg,
-          id: this.agents[existingIdx].id,
-        };
+      const dniNum = parseInt(newAg.dni.replace(/\D/g, ''), 10);
+      const legNum = parseInt(newAg.employeeNumber.replace(/\D/g, ''), 10);
+      if (isNaN(dniNum) || dniNum <= 0) continue;
+
+      const payload = {
+        dni: dniNum,
+        legajo: !isNaN(legNum) && legNum > 0 ? legNum : dniNum,
+        apellido: newAg.apellidos.toUpperCase(),
+        nombre: newAg.nombres.toUpperCase(),
+        telefono: newAg.telefono || '',
+        email: newAg.email || '',
+        fecha_nac: newAg.fechaNacimiento || null,
+        lugar_nacimiento: newAg.lugarNacimiento || null,
+        activo: true,
+      };
+
+      if (existing?.agente_id) {
+        await supabase.from('agentes').update(payload).eq('agente_id', existing.agente_id);
         updated++;
       } else {
-        this.agents.push(newAg);
+        await supabase.from('agentes').upsert(payload, { onConflict: 'dni' });
         newAdded++;
       }
     }
 
-    this.saveAgents();
+    await this.refreshFromSupabase();
 
     return {
       totalRows: dataRows.length,
@@ -1296,48 +1307,83 @@ class DataService {
     };
   }
 
-  // CARGOS CRUD (Section 5, 7) - Ordenados según el orden del CSV por defecto
+  // CARGOS CRUD
   public getCargos(): Cargo[] {
     return [...this.cargos].sort((a, b) => {
-      const orderA = a.ordenVisual !== undefined ? a.ordenVisual : (a.csvIndex !== undefined ? a.csvIndex + 1 : 99999);
-      const orderB = b.ordenVisual !== undefined ? b.ordenVisual : (b.csvIndex !== undefined ? b.csvIndex + 1 : 99999);
+      const orderA = a.ordenVisual !== undefined ? a.ordenVisual : a.cargo_id || 99999;
+      const orderB = b.ordenVisual !== undefined ? b.ordenVisual : b.cargo_id || 99999;
       return orderA - orderB;
     });
   }
 
-  public moveCargoUp(cargoId: string): Cargo[] {
+  private async persistCargoOrdersToSupabase(changedCargos: Cargo[]): Promise<void> {
+    if (changedCargos.length === 0) return;
+    const chunkSize = 25;
+    for (let i = 0; i < changedCargos.length; i += chunkSize) {
+      const chunk = changedCargos.slice(i, i + chunkSize);
+      await Promise.all(
+        chunk.map(async (c) => {
+          const numId = c.cargo_id || parseInt(c.id.replace(/\D/g, ''), 10);
+          if (!numId || isNaN(numId)) return;
+          const { error } = await supabase
+            .from('cargos')
+            .update({ orden_visual: c.ordenVisual })
+            .eq('cargo_id', numId);
+          if (error) {
+            console.error(`Error persisting orden_visual for cargo ${numId}:`, error.message);
+          }
+        })
+      );
+    }
+  }
+
+  public async moveCargoUp(cargoId: string): Promise<Cargo[]> {
     const list = this.getCargos();
     const idx = list.findIndex((c) => c.id === cargoId);
     if (idx > 0) {
       const temp = list[idx];
       list[idx] = list[idx - 1];
       list[idx - 1] = temp;
+      const changed: Cargo[] = [];
       list.forEach((c, i) => {
-        c.ordenVisual = i + 1;
+        const nextOrden = i + 1;
+        if (c.ordenVisual !== nextOrden) {
+          c.ordenVisual = nextOrden;
+          c.orden_visual = nextOrden;
+          changed.push(c);
+        }
       });
       this.cargos = list;
-      this.saveCargos();
+      this.notifyListeners();
+      await this.persistCargoOrdersToSupabase(changed);
     }
     return this.getCargos();
   }
 
-  public moveCargoDown(cargoId: string): Cargo[] {
+  public async moveCargoDown(cargoId: string): Promise<Cargo[]> {
     const list = this.getCargos();
     const idx = list.findIndex((c) => c.id === cargoId);
     if (idx >= 0 && idx < list.length - 1) {
       const temp = list[idx];
       list[idx] = list[idx + 1];
       list[idx + 1] = temp;
+      const changed: Cargo[] = [];
       list.forEach((c, i) => {
-        c.ordenVisual = i + 1;
+        const nextOrden = i + 1;
+        if (c.ordenVisual !== nextOrden) {
+          c.ordenVisual = nextOrden;
+          c.orden_visual = nextOrden;
+          changed.push(c);
+        }
       });
       this.cargos = list;
-      this.saveCargos();
+      this.notifyListeners();
+      await this.persistCargoOrdersToSupabase(changed);
     }
     return this.getCargos();
   }
 
-  public moveCargoToPosition(cargoId: string, targetPosition: number): Cargo[] {
+  public async moveCargoToPosition(cargoId: string, targetPosition: number): Promise<Cargo[]> {
     const list = this.getCargos();
     const idx = list.findIndex((c) => c.id === cargoId);
     if (idx === -1) return list;
@@ -1346,154 +1392,203 @@ class DataService {
 
     const [item] = list.splice(idx, 1);
     list.splice(targetIdx, 0, item);
+
+    const changed: Cargo[] = [];
     list.forEach((c, i) => {
-      c.ordenVisual = i + 1;
+      const nextOrden = i + 1;
+      if (c.ordenVisual !== nextOrden) {
+        c.ordenVisual = nextOrden;
+        c.orden_visual = nextOrden;
+        changed.push(c);
+      }
     });
     this.cargos = list;
-    this.saveCargos();
+    this.notifyListeners();
+    await this.persistCargoOrdersToSupabase(changed);
     return this.getCargos();
   }
 
-  public reorderCargos(newOrder: Cargo[]): Cargo[] {
+  public async reorderCargos(newOrder: Cargo[]): Promise<Cargo[]> {
+    const changed: Cargo[] = [];
     newOrder.forEach((c, i) => {
-      c.ordenVisual = i + 1;
+      const nextOrden = i + 1;
+      if (c.ordenVisual !== nextOrden) {
+        c.ordenVisual = nextOrden;
+        c.orden_visual = nextOrden;
+        changed.push(c);
+      }
     });
     this.cargos = newOrder;
-    this.saveCargos();
-    return this.getCargos();
-  }
-
-  public resetCargosToCSVOrder(): Cargo[] {
-    const list = [...this.cargos].sort((a, b) => {
-      const idxA = a.csvIndex !== undefined ? a.csvIndex : 99999;
-      const idxB = b.csvIndex !== undefined ? b.csvIndex : 99999;
-      return idxA - idxB;
-    });
-    list.forEach((c, i) => {
-      c.ordenVisual = i + 1;
-    });
-    this.cargos = list;
-    this.saveCargos();
-    return this.getCargos();
-  }
-
-  public createCargo(data: Omit<Cargo, 'id'>): Cargo {
-    const rawCurso = data.curso_raw || data.curso.replace(/\D/g, '') || '1';
-    const rawSeccion = data.seccion_raw || data.seccion.replace(/Div\.\s*/i, '') || 'A';
-    const turnoCode = data.turno_codigo || (data.turno === 'Mañana' ? 'M' : data.turno === 'Tarde' ? 'T' : data.turno === 'Vespertino' ? 'V' : 'M');
-
-    const id = 'cargo-' + Date.now();
-    const newCargo: Cargo = {
-      ...data,
-      id,
-      activo: true,
-      createdAt: new Date().toISOString(),
-    };
-    this.cargos.push(newCargo);
-    this.saveCargos();
-
-    // Automatically create default Puesto for this Cargo
-    const puestoId = 'puesto-' + Date.now();
-    const newPuesto: Puesto = {
-      id: puestoId,
-      cargoId: id,
-      descripcion: `Puesto ${newCargo.descripcion} (${newCargo.curso} ${newCargo.seccion})`,
-      agentesAsignados: [],
-      activo: true,
-      createdAt: new Date().toISOString(),
-    };
-    this.puestos.push(newPuesto);
-    this.savePuestos();
-
-    // Persist directly to Supabase PostgreSQL (cargos y puestos)
-    supabase
-      .from('cargos')
-      .insert({
-        secuencia: parseInt(data.secuencia, 10) || 1,
-        turno: turnoCode,
-        curso: rawCurso,
-        seccion: rawSeccion,
-        descripccion: data.descripcion,
-        obligaciones: parseInt(data.obligaciones || '1', 10) || 1,
-        activo: true,
-        tiene_art: data.tieneArticulacion || false,
-        orden_visual: data.ordenVisual || (this.cargos.length + 1),
-      })
-      .select()
-      .single()
-      .then(async ({ data: insCargo, error: cgErr }) => {
-        if (insCargo) {
-          newCargo.cargo_id = insCargo.cargo_id;
-          newCargo.id = `cargo-${insCargo.cargo_id}`;
-          newPuesto.cargoId = newCargo.id;
-          newPuesto.cargo_id = insCargo.cargo_id;
-
-          const { data: insPuesto } = await supabase
-            .from('puestos')
-            .insert({
-              cargo_id: insCargo.cargo_id,
-              activo: true,
-            })
-            .select()
-            .single();
-
-          if (insPuesto) {
-            newPuesto.id = `puesto-${insPuesto.puesto_id}`;
-            newPuesto.puesto_id = insPuesto.puesto_id;
-          }
-          this.saveCargos();
-          this.savePuestos();
-        }
-        if (cgErr) console.warn('Supabase createCargo notice:', cgErr.message);
-      });
-
     this.notifyListeners();
-    return newCargo;
+    await this.persistCargoOrdersToSupabase(changed);
+    return this.getCargos();
   }
 
-  public updateCargo(id: string, updates: Partial<Cargo>): Cargo {
-    const index = this.cargos.findIndex((c) => c.id === id);
-    if (index === -1) throw new Error('Cargo no encontrado.');
+  public async resetCargosToCSVOrder(): Promise<Cargo[]> {
+    await this.refreshFromSupabase();
+    return this.getCargos();
+  }
 
-    this.cargos[index] = {
-      ...this.cargos[index],
-      ...updates,
-    };
-    this.saveCargos();
+  public async createCargo(data: Omit<Cargo, 'id'>): Promise<Cargo> {
+    const rawCurso = (data.curso_raw || data.curso.replace(/\D/g, '') || data.curso.trim())
+      .slice(0, 2);
+    const rawSeccion = (data.seccion_raw || data.seccion.replace(/Div\.\s*/i, '').replace(/°/g, '').trim())
+      .slice(0, 2);
+    const turnoCode = turnoLabelToCode(data.turno, data.turno_codigo);
+    const secuenciaNum = parseInt(String(data.secuencia).replace(/\D/g, ''), 10) || 1;
+    const obligacionesNum = parseInt(String(data.obligaciones || '1').replace(/\D/g, ''), 10) || 1;
+    const maxOrden = this.cargos.reduce((max, c) => Math.max(max, c.ordenVisual || 0), 0);
+    const nextOrden = data.ordenVisual || maxOrden + 1;
 
-    // Persist to Supabase
-    const cargoItem = this.cargos[index];
-    const numCargoId = cargoItem.cargo_id || parseInt(id.replace(/\D/g, ''), 10);
-    if (numCargoId && !isNaN(numCargoId)) {
-      const sbUpdates: any = {};
-      if (updates.descripcion !== undefined) sbUpdates.descripccion = updates.descripcion;
-      if (updates.secuencia !== undefined) sbUpdates.secuencia = parseInt(updates.secuencia, 10) || 1;
-      if (updates.turno !== undefined) {
-        sbUpdates.turno = updates.turno === 'Mañana' ? 'M' : updates.turno === 'Tarde' ? 'T' : updates.turno === 'Vespertino' ? 'V' : 'M';
+    const { data: insCargo, error: cgErr } = await this.insertWithIdentityFallback(
+      'cargos',
+      'cargo_id',
+      {
+        secuencia: secuenciaNum,
+        turno: turnoCode,
+        curso: rawCurso || null,
+        seccion: rawSeccion || null,
+        descripccion: data.descripcion.trim().slice(0, 150),
+        obligaciones: obligacionesNum,
+        activo: true,
+        tiene_art: Boolean(data.tieneArticulacion),
+        orden_visual: nextOrden,
       }
-      if (updates.curso !== undefined) sbUpdates.curso = updates.curso.replace(/\D/g, '');
-      if (updates.seccion !== undefined) sbUpdates.seccion = updates.seccion.replace(/Div\.\s*/i, '');
-      if (updates.obligaciones !== undefined) sbUpdates.obligaciones = parseInt(updates.obligaciones, 10) || 1;
-      if (updates.activo !== undefined) sbUpdates.activo = updates.activo;
-      if (updates.tieneArticulacion !== undefined) sbUpdates.tiene_art = updates.tieneArticulacion;
+    );
 
-      if (Object.keys(sbUpdates).length > 0) {
-        supabase.from('cargos').update(sbUpdates).eq('cargo_id', numCargoId).then(({ error }) => {
-          if (error) console.warn('Supabase updateCargo notice:', error.message);
-        });
+    if (cgErr || !insCargo) {
+      throw new Error(cgErr?.message || 'Error al crear cargo en Supabase.');
+    }
+
+    const { data: insPuesto, error: puErr } = await this.insertWithIdentityFallback(
+      'puestos',
+      'puesto_id',
+      {
+        cargo_id: insCargo.cargo_id,
+        activo: true,
+      }
+    );
+
+    if (puErr || !insPuesto) {
+      throw new Error(puErr?.message || 'Cargo creado pero ocurrió un error al crear el puesto en Supabase.');
+    }
+
+    // Insertar horarios asociados si fueron cargados en el formulario
+    const regularHorarios = data.horarios || [];
+    const artHorariosList: Horario[] = data.tieneArticulacion
+      ? data.horariosArticulacion && data.horariosArticulacion.length > 0
+        ? data.horariosArticulacion
+        : data.horarioArticulacion
+        ? [data.horarioArticulacion]
+        : []
+      : [];
+
+    const horarioRows = [
+      ...regularHorarios.map((h) => ({
+        cargo_id: insCargo.cargo_id,
+        dia: h.dia,
+        hora_desde: h.horaIngreso.length === 5 ? `${h.horaIngreso}:00` : h.horaIngreso,
+        hora_hasta: h.horaSalida.length === 5 ? `${h.horaSalida}:00` : h.horaSalida,
+        articulacion: false,
+      })),
+      ...artHorariosList.map((h) => ({
+        cargo_id: insCargo.cargo_id,
+        dia: h.dia,
+        hora_desde: h.horaIngreso.length === 5 ? `${h.horaIngreso}:00` : h.horaIngreso,
+        hora_hasta: h.horaSalida.length === 5 ? `${h.horaSalida}:00` : h.horaSalida,
+        articulacion: true,
+      })),
+    ];
+
+    if (horarioRows.length > 0) {
+      const { error: hrErr } = await this.insertManyWithIdentityFallback(
+        'horarios_cargos',
+        'horario_id',
+        horarioRows
+      );
+      if (hrErr) {
+        console.error('Error al insertar horarios del cargo en Supabase:', hrErr.message);
       }
     }
 
-    this.notifyListeners();
-    return this.cargos[index];
+    await this.refreshFromSupabase();
+    const createdCargo =
+      this.cargos.find((c) => c.cargo_id === insCargo.cargo_id) ||
+      this.mapDbCargo(insCargo, new Map());
+    return createdCargo;
   }
 
-  /**
-   * Guarda y sincroniza los horarios de un Cargo tanto en memoria/localStorage
-   * como en la base de datos PostgreSQL de Supabase (tablas cargos y horarios_cargos).
-   * 
-   * Requisito: Todos los cargos tienen un horario regular, pueden tener o no horarios de articulación.
-   */
+  public async updateCargo(id: string, updates: Partial<Cargo>): Promise<Cargo> {
+    const index = this.cargos.findIndex((c) => c.id === id);
+    if (index === -1) throw new Error('Cargo no encontrado.');
+
+    const cargoItem = this.cargos[index];
+    const numCargoId = cargoItem.cargo_id || parseInt(id.replace(/\D/g, ''), 10);
+    if (!numCargoId || isNaN(numCargoId)) {
+      throw new Error('Identificador de cargo inválido en Supabase.');
+    }
+
+    const sbUpdates: Record<string, any> = {};
+    if (updates.descripcion !== undefined) {
+      sbUpdates.descripccion = updates.descripcion.trim().slice(0, 150);
+    }
+    if (updates.secuencia !== undefined) {
+      sbUpdates.secuencia = parseInt(String(updates.secuencia).replace(/\D/g, ''), 10) || 1;
+    }
+    if (updates.turno !== undefined) {
+      sbUpdates.turno = turnoLabelToCode(updates.turno, updates.turno_codigo);
+    }
+    if (updates.curso !== undefined) {
+      const cVal = (updates.curso.replace(/\D/g, '') || updates.curso.trim()).slice(0, 2);
+      sbUpdates.curso = cVal || null;
+    }
+    if (updates.seccion !== undefined) {
+      const sVal = updates.seccion.replace(/Div\.\s*/i, '').replace(/°/g, '').trim().slice(0, 2);
+      sbUpdates.seccion = sVal || null;
+    }
+    if (updates.obligaciones !== undefined) {
+      sbUpdates.obligaciones = parseInt(String(updates.obligaciones).replace(/\D/g, ''), 10) || 1;
+    }
+    if (updates.activo !== undefined) sbUpdates.activo = updates.activo;
+    if (updates.tieneArticulacion !== undefined) sbUpdates.tiene_art = updates.tieneArticulacion;
+
+    if (Object.keys(sbUpdates).length > 0) {
+      const { error } = await supabase
+        .from('cargos')
+        .update(sbUpdates)
+        .eq('cargo_id', numCargoId);
+      if (error) {
+        throw new Error(`Error actualizando cargo en Supabase: ${error.message}`);
+      }
+    }
+
+    const shouldSyncHorarios =
+      updates.horarios !== undefined ||
+      updates.tieneArticulacion !== undefined ||
+      updates.horarioArticulacion !== undefined ||
+      updates.horariosArticulacion !== undefined;
+
+    if (shouldSyncHorarios) {
+      const nextHorarios = updates.horarios ?? cargoItem.horarios ?? [];
+      const nextTieneArt = updates.tieneArticulacion ?? cargoItem.tieneArticulacion ?? false;
+      const nextHorArt = updates.horarioArticulacion ?? cargoItem.horarioArticulacion;
+      const nextHorArtList = updates.horariosArticulacion ?? cargoItem.horariosArticulacion;
+      const horRes = await this.saveCargoHorarios(
+        numCargoId,
+        nextHorarios,
+        nextTieneArt,
+        nextHorArt,
+        nextHorArtList
+      );
+      if (!horRes.success) {
+        throw new Error(horRes.error || 'Error actualizando horarios del cargo en Supabase.');
+      }
+    }
+
+    await this.refreshFromSupabase();
+    return this.cargos.find((c) => c.cargo_id === numCargoId) || this.cargos[index];
+  }
+
   public async saveCargoHorarios(
     cargoId: string | number,
     horarios: Horario[],
@@ -1511,8 +1606,10 @@ class DataService {
     }
 
     const numCargoId = cargo.cargo_id || Number(cargo.id.replace('cargo-', ''));
+    if (!numCargoId || isNaN(numCargoId)) {
+      return { success: false, error: `Identificador de cargo inválido: ${cargoId}` };
+    }
 
-    // Normalizar horarios regulares (articulacion = false)
     const cleanRegular: Horario[] = horarios.map((h, idx) => ({
       id: h.id || `h-${cargo.id}-${idx}-${Date.now()}`,
       cargo_id: numCargoId,
@@ -1522,7 +1619,6 @@ class DataService {
       articulacion: false,
     }));
 
-    // Normalizar horarios de articulación (articulacion = true)
     let cleanArtList: Horario[] = [];
     if (tieneArticulacion) {
       if (horariosArticulacion && horariosArticulacion.length > 0) {
@@ -1535,81 +1631,105 @@ class DataService {
           articulacion: true,
         }));
       } else if (horarioArticulacion && horarioArticulacion.dia && horarioArticulacion.horaIngreso) {
-        cleanArtList = [{
-          id: horarioArticulacion.id || `h-art-${cargo.id}-${Date.now()}`,
-          cargo_id: numCargoId,
-          dia: horarioArticulacion.dia,
-          horaIngreso: horarioArticulacion.horaIngreso,
-          horaSalida: horarioArticulacion.horaSalida || horarioArticulacion.horaIngreso,
-          articulacion: true,
-        }];
+        cleanArtList = [
+          {
+            id: horarioArticulacion.id || `h-art-${cargo.id}-${Date.now()}`,
+            cargo_id: numCargoId,
+            dia: horarioArticulacion.dia,
+            horaIngreso: horarioArticulacion.horaIngreso,
+            horaSalida: horarioArticulacion.horaSalida || horarioArticulacion.horaIngreso,
+            articulacion: true,
+          },
+        ];
       }
     }
 
-    // Actualizar en el estado local
-    cargo.horarios = cleanRegular;
-    cargo.tieneArticulacion = tieneArticulacion;
-    cargo.tiene_art = tieneArticulacion;
-    cargo.horarioArticulacion = cleanArtList.length > 0 ? cleanArtList[0] : undefined;
-    cargo.horariosArticulacion = cleanArtList;
-
-    this.saveCargos();
-
-    // Persistir a Supabase
     try {
-      if (numCargoId && !isNaN(numCargoId)) {
-        // 1. Actualizar bandera tiene_art en cargos
-        await supabase
-          .from('cargos')
-          .update({ tiene_art: tieneArticulacion })
-          .eq('cargo_id', numCargoId);
-
-        // 2. Eliminar horarios existentes en horarios_cargos para este cargo
-        await supabase
-          .from('horarios_cargos')
-          .delete()
-          .eq('cargo_id', numCargoId);
-
-        // 3. Insertar nuevos registros en horarios_cargos
-        const rowsToInsert = [
-          ...cleanRegular.map((h) => ({
-            cargo_id: numCargoId,
-            dia: h.dia,
-            hora_desde: h.horaIngreso.length === 5 ? `${h.horaIngreso}:00` : h.horaIngreso,
-            hora_hasta: h.horaSalida.length === 5 ? `${h.horaSalida}:00` : h.horaSalida,
-            articulacion: false,
-          })),
-          ...cleanArtList.map((h) => ({
-            cargo_id: numCargoId,
-            dia: h.dia,
-            hora_desde: h.horaIngreso.length === 5 ? `${h.horaIngreso}:00` : h.horaIngreso,
-            hora_hasta: h.horaSalida.length === 5 ? `${h.horaSalida}:00` : h.horaSalida,
-            articulacion: true,
-          })),
-        ];
-
-        if (rowsToInsert.length > 0) {
-          const { error: insErr } = await supabase
-            .from('horarios_cargos')
-            .insert(rowsToInsert);
-
-          if (insErr) {
-            console.warn('Advertencia al insertar en horarios_cargos:', insErr.message);
-            return { success: true, error: insErr.message };
-          }
-        }
+      const { error: updErr } = await supabase
+        .from('cargos')
+        .update({ tiene_art: tieneArticulacion })
+        .eq('cargo_id', numCargoId);
+      if (updErr) {
+        return { success: false, error: updErr.message };
       }
+
+      const { error: delErr } = await supabase
+        .from('horarios_cargos')
+        .delete()
+        .eq('cargo_id', numCargoId);
+      if (delErr) {
+        return { success: false, error: delErr.message };
+      }
+
+      const rowsToInsert = [
+        ...cleanRegular.map((h) => ({
+          cargo_id: numCargoId,
+          dia: h.dia,
+          hora_desde: h.horaIngreso.length === 5 ? `${h.horaIngreso}:00` : h.horaIngreso,
+          hora_hasta: h.horaSalida.length === 5 ? `${h.horaSalida}:00` : h.horaSalida,
+          articulacion: false,
+        })),
+        ...cleanArtList.map((h) => ({
+          cargo_id: numCargoId,
+          dia: h.dia,
+          hora_desde: h.horaIngreso.length === 5 ? `${h.horaIngreso}:00` : h.horaIngreso,
+          hora_hasta: h.horaSalida.length === 5 ? `${h.horaSalida}:00` : h.horaSalida,
+          articulacion: true,
+        })),
+      ];
+
+      if (rowsToInsert.length > 0) {
+        const { data: insertedRows, error: insErr } = await this.insertManyWithIdentityFallback(
+          'horarios_cargos',
+          'horario_id',
+          rowsToInsert
+        );
+
+        if (insErr) {
+          return { success: false, error: insErr.message };
+        }
+
+        if (insertedRows) {
+          cargo.horarios = insertedRows
+            .filter((h: any) => !h.articulacion)
+            .map((h: any) => ({
+              id: `horario-${h.horario_id}`,
+              horario_id: h.horario_id,
+              cargo_id: h.cargo_id,
+              dia: h.dia,
+              horaIngreso: (h.hora_desde || '').slice(0, 5),
+              horaSalida: (h.hora_hasta || '').slice(0, 5),
+              articulacion: false,
+            }));
+          const artDb = insertedRows.filter((h: any) => h.articulacion);
+          cargo.horariosArticulacion = artDb.map((h: any) => ({
+            id: `horario-${h.horario_id}`,
+            horario_id: h.horario_id,
+            cargo_id: h.cargo_id,
+            dia: h.dia,
+            horaIngreso: (h.hora_desde || '').slice(0, 5),
+            horaSalida: (h.hora_hasta || '').slice(0, 5),
+            articulacion: true,
+          }));
+          cargo.horarioArticulacion = cargo.horariosArticulacion[0];
+        }
+      } else {
+        cargo.horarios = [];
+        cargo.horarioArticulacion = undefined;
+        cargo.horariosArticulacion = [];
+      }
+
+      cargo.tieneArticulacion = tieneArticulacion;
+      cargo.tiene_art = tieneArticulacion;
+      this.notifyListeners();
 
       return { success: true };
     } catch (err: any) {
-      console.warn('Error sincronizando horarios con Supabase:', err);
-      return { success: true, error: err?.message };
+      console.error('Error sincronizando horarios con Supabase:', err);
+      return { success: false, error: err?.message || 'Error inesperado sincronizando horarios.' };
     }
   }
 
-  /**
-   * Asignación por lotes de horarios a múltiples cargos.
-   */
   public async saveBatchHorarios(
     updates: Array<{
       cargoId: string | number;
@@ -1633,34 +1753,40 @@ class DataService {
     return { success: true, count: successCount };
   }
 
-  // Section 21: "No eliminar cargos que tengan historial relacionado"
-  public deleteCargo(id: string) {
+  public async deleteCargo(id: string): Promise<void> {
     const puesto = this.puestos.find((p) => p.cargoId === id && p.agentesAsignados.length > 0);
     if (puesto) {
-      throw new Error('No es posible eliminar un cargo que tiene agentes asignados. Desasigne primero los agentes o desactive el cargo.');
+      throw new Error(
+        'No es posible eliminar un cargo que tiene agentes asignados. Desasigne primero los agentes o desactive el cargo.'
+      );
     }
-    const puestoToDelete = this.puestos.find((p) => p.cargoId === id);
     const cargoToDelete = this.cargos.find((c) => c.id === id);
-
-    this.cargos = this.cargos.filter((c) => c.id !== id);
-    this.puestos = this.puestos.filter((p) => p.cargoId !== id);
-    this.saveCargos();
-    this.savePuestos();
-
     const numCargoId = cargoToDelete?.cargo_id || parseInt(id.replace(/\D/g, ''), 10);
+
     if (numCargoId && !isNaN(numCargoId)) {
-      supabase.from('cargos').update({ activo: false }).eq('cargo_id', numCargoId).then(({ error }) => {
-        if (error) console.warn('Supabase deleteCargo notice:', error.message);
-      });
-      if (puestoToDelete?.puesto_id) {
-        supabase.from('puestos').update({ activo: false }).eq('puesto_id', puestoToDelete.puesto_id);
+      const { error: puErr } = await supabase
+        .from('puestos')
+        .update({ activo: false })
+        .eq('cargo_id', numCargoId);
+      if (puErr) {
+        throw new Error(`Error al desactivar puesto en Supabase: ${puErr.message}`);
+      }
+
+      const { error: cgErr } = await supabase
+        .from('cargos')
+        .update({ activo: false })
+        .eq('cargo_id', numCargoId);
+      if (cgErr) {
+        throw new Error(`Error al desactivar cargo en Supabase: ${cgErr.message}`);
       }
     }
 
+    this.cargos = this.cargos.filter((c) => c.id !== id);
+    this.puestos = this.puestos.filter((p) => p.cargoId !== id);
     this.notifyListeners();
   }
 
-  // PUESTOS & ASIGNACIONES (Section 6, 14)
+  // PUESTOS & ASIGNACIONES
   public getPuestos(): Puesto[] {
     return this.puestos;
   }
@@ -1673,12 +1799,45 @@ class DataService {
     return this.puestos.find((p) => p.cargoId === cargoId) || null;
   }
 
-  // Assign agent to puesto in specific order (Section 6: Un mismo puesto puede tener varios agentes con orden)
-  public assignAgentToPuesto(
-    puestoId: string, 
-    agenteId: string, 
+  public async getOrCreatePuestoForCargo(cargoId: string): Promise<Puesto> {
+    const existing = this.puestos.find((p) => p.cargoId === cargoId);
+    if (existing) return existing;
+
+    const cargo = this.cargos.find((c) => c.id === cargoId);
+    const numCargoId = cargo?.cargo_id || parseInt(cargoId.replace(/\D/g, ''), 10);
+    if (!numCargoId || isNaN(numCargoId)) {
+      throw new Error('Cargo no encontrado para crear puesto.');
+    }
+
+    const { data: insPuesto, error } = await this.insertWithIdentityFallback(
+      'puestos',
+      'puesto_id',
+      { cargo_id: numCargoId, activo: true }
+    );
+
+    if (error || !insPuesto) {
+      throw new Error(error?.message || 'Error al crear puesto en Supabase.');
+    }
+
+    const newPuesto: Puesto = {
+      id: `puesto-${insPuesto.puesto_id}`,
+      puesto_id: insPuesto.puesto_id,
+      cargoId: `cargo-${numCargoId}`,
+      cargo_id: numCargoId,
+      agentesAsignados: [],
+      activo: true,
+      createdAt: insPuesto.created_at || new Date().toISOString(),
+    };
+    this.puestos.push(newPuesto);
+    this.notifyListeners();
+    return newPuesto;
+  }
+
+  public async assignAgentToPuesto(
+    puestoId: string,
+    agenteId: string,
     situacionRevista: 'Titular' | 'Interino' | 'Suplente' = 'Titular'
-  ): Puesto {
+  ): Promise<Puesto> {
     const index = this.puestos.findIndex((p) => p.id === puestoId);
     if (index === -1) throw new Error('Puesto no encontrado.');
 
@@ -1688,91 +1847,115 @@ class DataService {
       throw new Error('El agente ya se encuentra asignado a este puesto.');
     }
 
+    const numPuestoId = currentPuesto.puesto_id || parseInt(puestoId.replace(/\D/g, ''), 10);
+    const agObj = this.agents.find((a) => a.id === agenteId);
+    const numAgenteId = agObj?.agente_id || parseInt(agenteId.replace(/\D/g, ''), 10);
+
+    if (!numPuestoId || isNaN(numPuestoId) || !numAgenteId || isNaN(numAgenteId)) {
+      throw new Error('Identificadores inválidos de puesto o agente para Supabase.');
+    }
+
     const nextOrden = currentPuesto.agentesAsignados.length + 1;
     const today = formatYMD(new Date());
 
+    const { data: insPC, error } = await this.insertWithIdentityFallback(
+      'puestos_cargos',
+      'puestos_cargos_id',
+      {
+        puesto_id: numPuestoId,
+        agente_id: numAgenteId,
+        orden: nextOrden,
+        sit_revista: situacionRevista,
+        fecha_alta: today,
+        activo: true,
+      }
+    );
+
+    if (error || !insPC) {
+      throw new Error(error?.message || 'Error al asignar agente en Supabase.');
+    }
+
     currentPuesto.agentesAsignados.push({
-      agenteId,
+      agenteId: `ag-${numAgenteId}`,
       orden: nextOrden,
       fechaAsignacion: today,
       situacionRevista,
     });
 
-    this.savePuestos();
-
-    // Persist to Supabase 'puestos_cargos'
-    const numPuestoId = currentPuesto.puesto_id || parseInt(puestoId.replace(/\D/g, ''), 10);
-    const numAgenteId = parseInt(agenteId.replace(/\D/g, ''), 10);
-
-    if (!isNaN(numPuestoId) && !isNaN(numAgenteId)) {
-      supabase
-        .from('puestos_cargos')
-        .insert({
-          puesto_id: numPuestoId,
-          agente_id: numAgenteId,
-          orden: nextOrden,
-          sit_revista: situacionRevista,
-          fecha_alta: today,
-          activo: true,
-        })
-        .select()
-        .single()
-        .then(({ data: insPC, error }) => {
-          if (insPC) {
-            this.puestosCargos.push({
-              puestos_cargos_id: insPC.puestos_cargos_id,
-              puesto_id: numPuestoId,
-              agente_id: numAgenteId,
-              orden: nextOrden,
-              sit_revista: situacionRevista,
-              fecha_alta: today,
-              activo: true,
-            });
-            this.savePuestosCargos();
-          }
-          if (error) console.warn('Supabase assignAgent notice:', error.message);
-        });
-    }
+    this.puestosCargos.push({
+      puestos_cargos_id: insPC.puestos_cargos_id,
+      puesto_id: numPuestoId,
+      agente_id: numAgenteId,
+      orden: nextOrden,
+      sit_revista: situacionRevista,
+      fecha_alta: today,
+      activo: true,
+    });
 
     this.notifyListeners();
     return currentPuesto;
   }
 
-  public removeAgentFromPuesto(puestoId: string, agenteId: string): Puesto {
+  public async removeAgentFromPuesto(puestoId: string, agenteId: string): Promise<Puesto> {
     const index = this.puestos.findIndex((p) => p.id === puestoId);
     if (index === -1) throw new Error('Puesto no encontrado.');
 
     const currentPuesto = this.puestos[index];
-    currentPuesto.agentesAsignados = currentPuesto.agentesAsignados
+    const numPuestoId = currentPuesto.puesto_id || parseInt(puestoId.replace(/\D/g, ''), 10);
+    const agObj = this.agents.find((a) => a.id === agenteId);
+    const numAgenteId = agObj?.agente_id || parseInt(agenteId.replace(/\D/g, ''), 10);
+
+    if (!numPuestoId || isNaN(numPuestoId) || !numAgenteId || isNaN(numAgenteId)) {
+      throw new Error('Identificadores inválidos para desasignar agente en Supabase.');
+    }
+
+    const { error } = await supabase
+      .from('puestos_cargos')
+      .update({ activo: false })
+      .eq('puesto_id', numPuestoId)
+      .eq('agente_id', numAgenteId)
+      .eq('activo', true);
+
+    if (error) {
+      throw new Error(error.message || 'Error al desasignar agente en Supabase.');
+    }
+
+    this.puestosCargos = this.puestosCargos.map((pc) =>
+      pc.puesto_id === numPuestoId && pc.agente_id === numAgenteId ? { ...pc, activo: false } : pc
+    );
+
+    const remaining = currentPuesto.agentesAsignados
       .filter((a) => a.agenteId !== agenteId)
-      // Re-index order
       .map((a, i) => ({ ...a, orden: i + 1 }));
 
-    this.savePuestos();
+    currentPuesto.agentesAsignados = remaining;
 
-    const numPuestoId = currentPuesto.puesto_id || parseInt(puestoId.replace(/\D/g, ''), 10);
-    const numAgenteId = parseInt(agenteId.replace(/\D/g, ''), 10);
-
-    if (!isNaN(numPuestoId) && !isNaN(numAgenteId)) {
-      supabase
-        .from('puestos_cargos')
-        .update({ activo: false })
-        .eq('puesto_id', numPuestoId)
-        .eq('agente_id', numAgenteId)
-        .then(({ error }) => {
-          if (error) console.warn('Supabase removeAgent notice:', error.message);
-        });
-    }
+    // Re-indexar orden de los agentes restantes en Supabase
+    await Promise.all(
+      remaining.map(async (asig) => {
+        const remAgId = parseInt(asig.agenteId.replace(/\D/g, ''), 10);
+        if (!isNaN(remAgId)) {
+          await supabase
+            .from('puestos_cargos')
+            .update({ orden: asig.orden })
+            .eq('puesto_id', numPuestoId)
+            .eq('agente_id', remAgId)
+            .eq('activo', true);
+        }
+      })
+    );
 
     this.notifyListeners();
     return currentPuesto;
   }
 
-  public reorderPuestoAgents(puestoId: string, orderedAgentIds: string[]): Puesto {
+  public async reorderPuestoAgents(puestoId: string, orderedAgentIds: string[]): Promise<Puesto> {
     const index = this.puestos.findIndex((p) => p.id === puestoId);
     if (index === -1) throw new Error('Puesto no encontrado.');
 
     const currentPuesto = this.puestos[index];
+    const numPuestoId = currentPuesto.puesto_id || parseInt(puestoId.replace(/\D/g, ''), 10);
+
     const newAssignments = orderedAgentIds.map((agId, i) => {
       const existing = currentPuesto.agentesAsignados.find((a) => a.agenteId === agId);
       return {
@@ -1783,28 +1966,31 @@ class DataService {
       };
     });
 
-    currentPuesto.agentesAsignados = newAssignments;
-    this.savePuestos();
-
-    const numPuestoId = currentPuesto.puesto_id || parseInt(puestoId.replace(/\D/g, ''), 10);
-    if (!isNaN(numPuestoId)) {
-      orderedAgentIds.forEach((agId, idx) => {
-        const numAgId = parseInt(agId.replace(/\D/g, ''), 10);
-        if (!isNaN(numAgId)) {
-          supabase
-            .from('puestos_cargos')
-            .update({ orden: idx + 1 })
-            .eq('puesto_id', numPuestoId)
-            .eq('agente_id', numAgId);
-        }
-      });
+    if (numPuestoId && !isNaN(numPuestoId)) {
+      await Promise.all(
+        orderedAgentIds.map(async (agId, idx) => {
+          const numAgId = parseInt(agId.replace(/\D/g, ''), 10);
+          if (!isNaN(numAgId)) {
+            const { error } = await supabase
+              .from('puestos_cargos')
+              .update({ orden: idx + 1 })
+              .eq('puesto_id', numPuestoId)
+              .eq('agente_id', numAgId)
+              .eq('activo', true);
+            if (error) {
+              console.error('Error reordenando agente en puestos_cargos:', error.message);
+            }
+          }
+        })
+      );
     }
 
+    currentPuesto.agentesAsignados = newAssignments;
     this.notifyListeners();
     return currentPuesto;
   }
 
-  // SOLICITUDES DE LICENCIAS (Section 9, 16, 17, 18)
+  // SOLICITUDES DE LICENCIAS
   public getRequests(): LicenseRequest[] {
     return [...this.requests].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -1813,7 +1999,7 @@ class DataService {
 
   public async getRequestsByEmployee(employeeNumber: string): Promise<LicenseRequest[]> {
     await this.initialize();
-    await this.refreshRequestsFromSupabase();
+    await this.refreshRequestsFromSupabase(false);
 
     const trimmed = employeeNumber.trim().toLowerCase();
     const ag = this.agents.find(
@@ -1838,7 +2024,7 @@ class DataService {
   public async createLicenseRequest(
     data: Omit<LicenseRequest, 'id' | 'createdAt' | 'status' | 'source' | 'historialEstados'> & { id?: string }
   ): Promise<LicenseRequest> {
-    const codeId = data.id || ('SOL-' + new Date().getFullYear() + '-' + Math.floor(100 + Math.random() * 900));
+    const codeId = data.id || 'SOL-' + new Date().getFullYear() + '-' + Math.floor(100 + Math.random() * 900);
     const newReq: LicenseRequest = {
       ...data,
       id: codeId,
@@ -1848,61 +2034,74 @@ class DataService {
       historialEstados: [],
     };
 
-    this.requests.unshift(newReq);
-    this.saveRequests();
-
-    // Persistir directamente a Supabase PostgreSQL (solicitud_licencias)
-    const ag = this.agents.find(
-      (a) => a.employeeNumber === newReq.employeeNumber || (newReq.agentDni && a.dni === newReq.agentDni)
+    const empClean = (newReq.employeeNumber || '').trim().toLowerCase();
+    const dniDigits = (newReq.agentDni || '').replace(/\D/g, '');
+    let ag = this.agents.find(
+      (a) =>
+        (empClean && a.employeeNumber.trim().toLowerCase() === empClean) ||
+        (dniDigits && a.dni.replace(/\D/g, '') === dniDigits)
     );
-    const agIdNum = ag?.agente_id || 1;
-    const typeIdNum = newReq.licenseTypeId ? parseInt(newReq.licenseTypeId.replace(/\D/g, ''), 10) || 1 : 1;
+    if (!ag && (empClean || dniDigits)) {
+      ag = (await this.verifyAgent(newReq.employeeNumber || newReq.agentDni)) || undefined;
+    }
+    if (!ag?.agente_id) {
+      throw new Error('No se pudo identificar el agente en la base de datos de Supabase.');
+    }
+
+    const lt = this.licenseTypes.find((t) => t.id === newReq.licenseTypeId);
+    const typeIdNum = lt?.tipo_licencia_id || parseInt(newReq.licenseTypeId.replace(/\D/g, ''), 10) || 1;
     const obligacionesNum =
       newReq.cantidadObligaciones ||
       parseInt(newReq.obligaciones || newReq.obligations || '1', 10) ||
       1;
 
-    try {
-      const { data: insData, error } = await supabase
-        .from('solicitud_licencias')
-        .insert({
-          agente_id: agIdNum,
-          tipo_licencia_id: typeIdNum,
-          puestos_id: [newReq.postsSelection || '1'],
-          fecha_desde: newReq.dateFrom,
-          fecha_hasta: newReq.dateTo,
-          articulacion: newReq.isArticulation || false,
-          obligaciones: obligacionesNum,
-          detalle_solicitud: newReq.note || newReq.detail || '',
-          codigo: newReq.id,
-          estado: 'Pendiente',
-          signature_data_url: newReq.signatureDriveUrl || newReq.signatureDataUrl || null,
-          justificacion_url: newReq.justificationDriveUrl || newReq.justificationDataUrl || null,
-          fecha_carga: newReq.createdAt,
-        })
-        .select()
-        .single();
+    const puestosArray =
+      newReq.postsSelection && newReq.postsSelection !== 'ALL'
+        ? newReq.postsSelection
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : ['ALL'];
 
-      if (insData && insData.codigo) {
-        newReq.id = insData.codigo;
-        this.saveRequests();
+    const { data: insData, error } = await this.insertWithIdentityFallback(
+      'solicitud_licencias',
+      'solicitud_licencia_id',
+      {
+        agente_id: ag.agente_id,
+        tipo_licencia_id: typeIdNum,
+        puestos_id: puestosArray,
+        fecha_desde: newReq.dateFrom,
+        fecha_hasta: newReq.dateTo,
+        articulacion: newReq.isArticulation || false,
+        obligaciones: obligacionesNum,
+        detalle_solicitud: newReq.note || newReq.detail || '',
+        codigo: newReq.id,
+        estado: 'Pendiente',
+        signature_data_url: newReq.signatureDriveUrl || newReq.signatureDataUrl || null,
+        justificacion_url: newReq.justificationDriveUrl || newReq.justificationDataUrl || null,
+        fecha_carga: newReq.createdAt,
       }
-      if (error) console.warn('Supabase insert solicitud_licencias notice:', error.message);
-    } catch (err: any) {
-      console.warn('Supabase insert solicitud_licencias notice:', err?.message || err);
+    );
+
+    if (error) {
+      throw new Error(`Error al guardar solicitud en Supabase: ${error.message}`);
     }
 
-    const logEntry: AuditLog = {
+    if (insData && insData.codigo) {
+      newReq.id = insData.codigo;
+    }
+
+    this.requests.unshift(newReq);
+
+    this.auditLogs.unshift({
       id: 'log-' + Date.now(),
       action: 'CREACION_SOLICITUD',
-      targetRequestId: codeId,
+      targetRequestId: newReq.id,
       employeeNumber: newReq.employeeNumber,
       agentName: newReq.agentName,
       reason: `Solicitud creada para ${newReq.postDescription}`,
       timestamp: new Date().toISOString(),
-    };
-    this.auditLogs.unshift(logEntry);
-    this.saveAuditLogs();
+    });
 
     this.notifyListeners();
     return newReq;
@@ -1912,21 +2111,29 @@ class DataService {
     const index = this.requests.findIndex((r) => r.id === id);
     if (index === -1) throw new Error('Solicitud no encontrada.');
     this.requests[index] = { ...this.requests[index], ...updates };
-    this.saveRequests();
-    
-    // Update directly in Supabase PostgreSQL
-    supabase.from('solicitud_licencias').update({
-      estado: updates.status,
-      detalle_solicitud: updates.note || updates.detail,
-    }).eq('codigo', id).then(({ error }) => {
-      if (error) console.warn('Supabase update solicitud_licencias notice:', error.message);
-    });
+
+    const numId = parseInt(id.replace(/\D/g, ''), 10);
+    const sbPayload: Record<string, any> = {};
+    if (updates.status !== undefined) sbPayload.estado = updates.status;
+    if (updates.note !== undefined || updates.detail !== undefined) {
+      sbPayload.detalle_solicitud = updates.note || updates.detail;
+    }
+
+    if (Object.keys(sbPayload).length > 0) {
+      const q = supabase.from('solicitud_licencias').update(sbPayload);
+      const reqExec =
+        !isNaN(numId) && numId > 0 && !id.startsWith('SOL-')
+          ? q.or(`codigo.eq.${id},solicitud_licencia_id.eq.${numId}`)
+          : q.eq('codigo', id);
+      reqExec.then(({ error }) => {
+        if (error) console.error('Supabase update solicitud_licencias error:', error.message);
+      });
+    }
 
     this.notifyListeners();
     return this.requests[index];
   }
 
-  // Section 9 & 16: Change state with history, user, and detail observation
   public updateRequestStatus(
     requestId: string,
     newStatus: LicenseStatus,
@@ -1952,20 +2159,18 @@ class DataService {
     if (!req.historialEstados) req.historialEstados = [];
     req.historialEstados.unshift(historyEntry);
 
-    this.saveRequests();
-
-    // Actualizar directamente en Supabase PostgreSQL (solicitud_licencias)
-    supabase.from('solicitud_licencias')
+    supabase
+      .from('solicitud_licencias')
       .update({
         estado: newStatus,
         detalle_estado: detalleObservacion.trim() || null,
       })
       .eq('codigo', req.id)
       .then(({ error }) => {
-        if (error) console.warn('Supabase update solicitud_licencias notice:', error.message);
+        if (error) console.error('Supabase update solicitud_licencias error:', error.message);
       });
 
-    const logEntry: AuditLog = {
+    this.auditLogs.unshift({
       id: 'log-' + Date.now(),
       action: 'CAMBIO_ESTADO',
       targetRequestId: req.id,
@@ -1974,20 +2179,12 @@ class DataService {
       reason: `Estado cambiado de ${prevStatus} a ${newStatus}. ${detalleObservacion}`,
       usuario: usuarioEmail,
       timestamp: new Date().toISOString(),
-    };
-    this.auditLogs.unshift(logEntry);
-    this.saveAuditLogs();
+    });
 
     this.notifyListeners();
     return req;
   }
 
-  /**
-   * Permite al agente justificar una licencia autorizada adjuntando comprobante/documentación
-   */
-  /**
-   * Permite al agente justificar una licencia autorizada adjuntando comprobante/documentación
-   */
   public async justifyAuthorizedRequest(
     requestId: string,
     employeeNumber: string,
@@ -1997,14 +2194,13 @@ class DataService {
     await this.initialize();
     let index = this.requests.findIndex((r) => r.id === requestId);
     if (index === -1) {
-      await this.refreshRequestsFromSupabase();
+      await this.refreshRequestsFromSupabase(false);
       index = this.requests.findIndex((r) => r.id === requestId);
     }
     if (index === -1) throw new Error('Solicitud no encontrada.');
 
     const req = this.requests[index];
 
-    // Validación de permisos flexible: El solicitante puede identificarse por Legajo o por DNI
     const cleanParam = (employeeNumber || '').trim().toLowerCase();
     const cleanDigits = cleanParam.replace(/\D/g, '');
 
@@ -2013,7 +2209,6 @@ class DataService {
     const reqDni = (req.agentDni || '').trim().toLowerCase();
     const reqDniDigits = reqDni.replace(/\D/g, '');
 
-    // Buscar agente por el identificador provisto (legajo o DNI)
     const agentByParam = this.agents.find((a) => {
       const aEmp = (a.employeeNumber || '').trim().toLowerCase();
       const aDni = (a.dni || '').trim().toLowerCase();
@@ -2025,7 +2220,6 @@ class DataService {
       );
     });
 
-    // Buscar agente asociado a la solicitud
     const agentByReq = this.agents.find((a) => {
       const aEmp = (a.employeeNumber || '').trim().toLowerCase();
       const aDni = (a.dni || '').trim().toLowerCase();
@@ -2045,11 +2239,10 @@ class DataService {
 
     const isCrossAgentMatch =
       (agentByParam && agentByReq && (agentByParam.id === agentByReq.id || agentByParam.dni === agentByReq.dni)) ||
-      (agentByParam && (
-        (agentByParam.employeeNumber && agentByParam.employeeNumber.trim().toLowerCase() === reqEmp) ||
-        (agentByParam.dni && agentByParam.dni.trim().toLowerCase() === reqDni) ||
-        (cleanDigits && agentByParam.dni.replace(/\D/g, '') === reqDniDigits)
-      ));
+      (agentByParam &&
+        ((agentByParam.employeeNumber && agentByParam.employeeNumber.trim().toLowerCase() === reqEmp) ||
+          (agentByParam.dni && agentByParam.dni.trim().toLowerCase() === reqDni) ||
+          (cleanDigits && agentByParam.dni.replace(/\D/g, '') === reqDniDigits)));
 
     const isAdmin = authService.isAdminOrSuperadmin();
 
@@ -2078,25 +2271,17 @@ class DataService {
     if (!req.historialEstados) req.historialEstados = [];
     req.historialEstados.unshift(historyEntry);
 
-    this.saveRequests();
+    const { error } = await supabase
+      .from('solicitud_licencias')
+      .update({
+        estado: 'Justificada',
+        justificacion_url: file.driveUrl || file.dataUrl,
+        detalle_estado: observacion?.trim() || `Comprobante adjuntado (${file.name})`,
+      })
+      .eq('codigo', req.id);
 
-    // Actualizar directamente en Supabase PostgreSQL (solicitud_licencias)
-    try {
-      const numId = parseInt(req.id.replace(/\D/g, ''), 10);
-      let updateQuery = supabase.from('solicitud_licencias')
-        .update({
-          estado: 'Justificada',
-          justificacion_url: file.driveUrl || file.dataUrl,
-          detalle_estado: observacion?.trim() || `Comprobante adjuntado (${file.name})`,
-        });
-
-      if (!isNaN(numId) && numId > 0) {
-        await updateQuery.or(`codigo.eq.${req.id},solicitud_licencia_id.eq.${numId}`);
-      } else {
-        await updateQuery.eq('codigo', req.id);
-      }
-    } catch (e: any) {
-      console.warn('Supabase justify notice:', e?.message || e);
+    if (error) {
+      console.error('Supabase justify error:', error.message);
     }
 
     this.auditLogs.unshift({
@@ -2109,13 +2294,11 @@ class DataService {
       usuario: `Agente Leg. ${req.employeeNumber || employeeNumber}`,
       timestamp: new Date().toISOString(),
     });
-    this.saveAuditLogs();
 
     this.notifyListeners();
     return req;
   }
 
-  // Section 18: Modificación Masiva
   public bulkUpdateStatus(
     requestIds: string[],
     newStatus: LicenseStatus,
@@ -2145,17 +2328,15 @@ class DataService {
       }
     }
 
-    this.saveRequests();
-
-    // Actualizar en lote directamente en Supabase
-    supabase.from('solicitud_licencias')
+    supabase
+      .from('solicitud_licencias')
       .update({
         estado: newStatus,
         detalle_estado: detalleObservacion || 'Modificación masiva de estado',
       })
       .in('codigo', requestIds)
       .then(({ error }) => {
-        if (error) console.warn('Supabase bulk update notice:', error.message);
+        if (error) console.error('Supabase bulk update error:', error.message);
       });
 
     this.auditLogs.unshift({
@@ -2165,14 +2346,16 @@ class DataService {
       usuario: usuarioEmail,
       timestamp: new Date().toISOString(),
     });
-    this.saveAuditLogs();
 
     this.notifyListeners();
     return { updatedCount: count };
   }
 
-  // Deletion with rules
-  public deleteLicenseRequest(requestId: string, employeeNumber: string, reason: string): Promise<boolean> {
+  public async deleteLicenseRequest(
+    requestId: string,
+    _employeeNumber: string,
+    reason: string
+  ): Promise<boolean> {
     const index = this.requests.findIndex((r) => r.id === requestId);
     if (index === -1) throw new Error('La solicitud no fue encontrada.');
 
@@ -2181,21 +2364,22 @@ class DataService {
       throw new Error(`No se permite eliminar solicitudes en estado "${req.status}".`);
     }
 
-    req.status = 'Eliminada';
-    req.deletedAt = new Date().toISOString();
-    this.saveRequests();
-
-    // Actualizar directamente en Supabase PostgreSQL (solicitud_licencias)
-    supabase.from('solicitud_licencias')
+    const deletedAt = new Date().toISOString();
+    const { error } = await supabase
+      .from('solicitud_licencias')
       .update({
         estado: 'Eliminada',
-        deleted_at: req.deletedAt,
+        deleted_at: deletedAt,
         detalle_estado: reason || 'Eliminada por el agente',
       })
-      .eq('codigo', requestId)
-      .then(({ error }) => {
-        if (error) console.warn('Supabase delete notice:', error.message);
-      });
+      .eq('codigo', requestId);
+
+    if (error) {
+      throw new Error(`Error al eliminar solicitud en Supabase: ${error.message}`);
+    }
+
+    req.status = 'Eliminada';
+    req.deletedAt = deletedAt;
 
     this.auditLogs.unshift({
       id: 'log-' + Date.now(),
@@ -2206,15 +2390,11 @@ class DataService {
       reason: reason || 'Eliminada por el agente',
       timestamp: new Date().toISOString(),
     });
-    this.saveAuditLogs();
 
     this.notifyListeners();
-    return Promise.resolve(true);
+    return true;
   }
 
-  /**
-   * Obtiene todas las solicitudes que contienen archivos o comprobantes adjuntos
-   */
   public getRequestsWithJustifications(): LicenseRequest[] {
     return this.requests.filter(
       (r) =>
@@ -2226,11 +2406,6 @@ class DataService {
     );
   }
 
-  /**
-   * Superadmin: Elimina archivos de justificación adjuntos en una o varias solicitudes.
-   * Permite eliminar solo el archivo adjunto (dejando la solicitud en estado Autorizada para requerir nuevo comprobante)
-   * o eliminar la solicitud completa junto con su comprobante.
-   */
   public deleteJustificationFiles(
     requestIds: string[],
     superadminEmail: string,
@@ -2242,7 +2417,13 @@ class DataService {
 
     for (const id of requestIds) {
       const req = this.requests.find((r) => r.id === id);
-      if (req && (req.justificationName || req.justificationDataUrl || req.justificationDriveUrl || req.justificationDriveFileId)) {
+      if (
+        req &&
+        (req.justificationName ||
+          req.justificationDataUrl ||
+          req.justificationDriveUrl ||
+          req.justificationDriveFileId)
+      ) {
         const fileName = req.justificationName || 'comprobante_adjunto';
         const prevStatus = req.status;
 
@@ -2262,6 +2443,19 @@ class DataService {
             req.status = 'Autorizada';
           }
         }
+
+        supabase
+          .from('solicitud_licencias')
+          .update({
+            justificacion_url: null,
+            estado: req.status,
+            deleted_at: deleteWholeRequest ? req.deletedAt : null,
+            detalle_estado: reason,
+          })
+          .eq('codigo', req.id)
+          .then(({ error }) => {
+            if (error) console.error('Supabase deleteJustificationFiles error:', error.message);
+          });
 
         const historyEntry: HistorialEstadoSolicitud = {
           id: 'h-' + Date.now() + '-' + count,
@@ -2283,7 +2477,9 @@ class DataService {
           targetRequestId: req.id,
           employeeNumber: req.employeeNumber,
           agentName: req.agentName,
-          reason: `Archivo adjunto "${fileName}" eliminado por ${superadminEmail}. Motivo: ${reason}${deleteWholeRequest ? ' (Solicitud eliminada)' : ''}`,
+          reason: `Archivo adjunto "${fileName}" eliminado por ${superadminEmail}. Motivo: ${reason}${
+            deleteWholeRequest ? ' (Solicitud eliminada)' : ''
+          }`,
           usuario: superadminEmail,
           timestamp: new Date().toISOString(),
         });
@@ -2294,14 +2490,13 @@ class DataService {
     }
 
     if (count > 0) {
-      this.saveRequests();
-      this.saveAuditLogs();
+      this.notifyListeners();
     }
 
     return { deletedCount: count, affectedRequests: affected };
   }
 
-  // SISO IMPORT (Section 8, 22)
+  // SISO IMPORT
   public getSisoLicenses(): SisoLicense[] {
     return this.sisoLicenses;
   }
@@ -2310,26 +2505,28 @@ class DataService {
     return this.sisoImports;
   }
 
-  /**
-   * Retorna un mapa indexado por legajo y DNI con las licencias activas (en curso) a la fecha de referencia
-   */
-  public getActiveLicensesMap(referenceDate?: string): Map<string, {
-    source: 'Solicitud' | 'SISO';
-    licenseType: string;
-    dateFrom: string;
-    dateTo: string;
-    status: string;
-  }> {
-    const today = referenceDate || formatYMD(new Date());
-    const map = new Map<string, {
+  public getActiveLicensesMap(referenceDate?: string): Map<
+    string,
+    {
       source: 'Solicitud' | 'SISO';
       licenseType: string;
       dateFrom: string;
       dateTo: string;
       status: string;
-    }>();
+    }
+  > {
+    const today = referenceDate || formatYMD(new Date());
+    const map = new Map<
+      string,
+      {
+        source: 'Solicitud' | 'SISO';
+        licenseType: string;
+        dateFrom: string;
+        dateTo: string;
+        status: string;
+      }
+    >();
 
-    // 1. Solicitudes de licencias internas activas del colegio (SISO se mantiene completamente aislado)
     for (const r of this.requests) {
       if (['Autorizada', 'Justificada', 'Completada', 'Descuento', 'Pendiente'].includes(r.status)) {
         if (r.dateFrom <= today && r.dateTo >= today) {
@@ -2349,9 +2546,6 @@ class DataService {
     return map;
   }
 
-  /**
-   * Consulta licencias de SISO de forma aislada, buscando exclusivamente por DNI o número de empleado/legajo
-   */
   public getSisoLicensesByAgent(query: { dni?: string; nroEmpleado?: string }): SisoLicense[] {
     const dniClean = query.dni ? query.dni.replace(/\D/g, '') : '';
     const legajoClean = query.nroEmpleado ? query.nroEmpleado.trim().toLowerCase() : '';
@@ -2364,10 +2558,10 @@ class DataService {
     });
   }
 
-  /**
-   * Consulta licencias de SISO directamente en Supabase PostgreSQL (11.000+ registros en tiempo real)
-   */
-  public async querySisoLicensesByAgent(query: { dni?: string; nroEmpleado?: string }): Promise<SisoLicense[]> {
+  public async querySisoLicensesByAgent(query: {
+    dni?: string;
+    nroEmpleado?: string;
+  }): Promise<SisoLicense[]> {
     const dniClean = query.dni ? String(query.dni).replace(/\D/g, '') : '';
     const legajoClean = query.nroEmpleado ? String(query.nroEmpleado).trim() : '';
     if (!dniClean && !legajoClean) return [];
@@ -2383,7 +2577,7 @@ class DataService {
       }
 
       const { data: dbSiso, error } = await q.order('fecha_desde', { ascending: false });
-      if (!error && dbSiso && dbSiso.length > 0) {
+      if (!error && dbSiso) {
         return dbSiso.map((s: any): SisoLicense => ({
           id: s.id,
           siso_id: s.siso_id,
@@ -2425,9 +2619,6 @@ class DataService {
     return this.getSisoLicensesByAgent(query);
   }
 
-  /**
-   * Analiza el CSV o texto de SISO antes de importar para validar columnas y previsualizar registros
-   */
   public analyzeSisoCsv(csvText: string): {
     valid: boolean;
     detected: number;
@@ -2468,7 +2659,6 @@ class DataService {
     const errors: string[] = [];
     const warnings: string[] = [];
 
-    // Validar columnas obligatorias si se especificaron encabezados
     if (!isHeaderAutoAssigned) {
       const requiredConcepts = [
         { label: 'ID', keys: ['ID', 'NRO TRAMITE', 'ID SISO'] },
@@ -2544,7 +2734,9 @@ class DataService {
       const dias = !isNaN(diasParsed) && diasParsed > 0 ? diasParsed : calculateDaysBetween(desde, hasta);
 
       const justifica = getField(row, 'JUSTIFICA', 'ESTADO', 'JUSTIFICADO', 'AUDITORIA') || 'SIN AUDITAR';
-      const codLicencia = getField(row, 'COD LICENCIA', 'CODIGO LICENCIA', 'CODIGO', 'ARTICULO') || '7000 - PENDIENTE DE AUDITAR MEDICINA LABORAL';
+      const codLicencia =
+        getField(row, 'COD LICENCIA', 'CODIGO LICENCIA', 'CODIGO', 'ARTICULO') ||
+        '7000 - PENDIENTE DE AUDITAR MEDICINA LABORAL';
       const tipo = getField(row, 'TIPO', 'TIPO LICENCIA') || 'ENFERMEDAD';
 
       const isExisting = this.sisoLicenses.some(
@@ -2586,18 +2778,18 @@ class DataService {
     };
   }
 
-  public importSisoCsv(
+  public async importSisoCsv(
     csvText: string,
     fileName: string,
     usuarioEmail: string
-  ): {
+  ): Promise<{
     success: boolean;
     detected: number;
     created: number;
     updated: number;
     errors: string[];
     importId: string;
-  } {
+  }> {
     const { headers, dataRows, delimiter } = preprocessSisoCsv(csvText);
 
     if (dataRows.length === 0) {
@@ -2614,7 +2806,7 @@ class DataService {
     const importId = 'imp-' + Date.now();
     const errors: string[] = [];
     let created = 0;
-    let updated = 0;
+    const updated = 0;
     let detected = 0;
     const newSisoItemsToInsert: SisoLicense[] = [];
 
@@ -2652,24 +2844,28 @@ class DataService {
       const dias = !isNaN(diasParsed) && diasParsed > 0 ? diasParsed : calculateDaysBetween(desde, hasta);
 
       const justifica = getField(row, 'JUSTIFICA', 'ESTADO', 'JUSTIFICADO', 'AUDITORIA') || 'SIN AUDITAR';
-      const codLicencia = getField(row, 'COD LICENCIA', 'CODIGO LICENCIA', 'CODIGO', 'ARTICULO') || '7000 - PENDIENTE DE AUDITAR MEDICINA LABORAL';
+      const codLicencia =
+        getField(row, 'COD LICENCIA', 'CODIGO LICENCIA', 'CODIGO', 'ARTICULO') ||
+        '7000 - PENDIENTE DE AUDITAR MEDICINA LABORAL';
       const rawFechaAlta = getField(row, 'FECHA ALTA', 'ALTA');
-      const fechaAlta = rawFechaAlta ? normalizeSisoDate(rawFechaAlta) : (rawCarga ? normalizeSisoDate(rawCarga) : formatYMD(new Date()));
       const auditor = getField(row, 'AUDITOR', 'MEDICO AUDITOR');
       const patologia = getField(row, 'PATOLOGIA', 'DIAGNOSTICO', 'CIE10');
       const rawFechaAuditoria = getField(row, 'FECHA AUDITORIA');
-      const fechaAuditoria = rawFechaAuditoria ? normalizeSisoDate(rawFechaAuditoria) : '';
       const medicoInterviniente = getField(row, 'MEDICO_INTERVINIENTE', 'MEDICO INTERVINIENTE', 'MEDICO');
-      const matriculaMedicoInterviniente = getField(row, 'MATRICULA_MEDICO_INTERVINIENTE', 'MATRICULA MEDICO INTERVINIENTE', 'MATRICULA');
-      const establecimientosOSector = getField(row, 'ESTABLECIMIENTOS O SECTOR', 'ESTABLECIMIENTO', 'SECTOR') || 'CPEM N° 25';
+      const matriculaMedicoInterviniente = getField(
+        row,
+        'MATRICULA_MEDICO_INTERVINIENTE',
+        'MATRICULA MEDICO INTERVINIENTE',
+        'MATRICULA'
+      );
+      const establecimientosOSector =
+        getField(row, 'ESTABLECIMIENTOS O SECTOR', 'ESTABLECIMIENTO', 'SECTOR') || 'CPEM N° 25';
 
-      // El CSV de SISO siempre es el total acumulado: solo se cargan en la tabla las nuevas por ID
       const existingIdx = this.sisoLicenses.findIndex(
         (lic) => lic.id === sisoId || (lic.siso_id && String(lic.siso_id) === String(sisoId))
       );
 
       if (existingIdx !== -1) {
-        // Ya existe previamente en la tabla siso_licencias; se omite
         continue;
       }
 
@@ -2707,43 +2903,45 @@ class DataService {
         importId,
       };
 
-      this.sisoLicenses.push(sisoItem);
+      this.sisoLicenses.unshift(sisoItem);
       created++;
       newSisoItemsToInsert.push(sisoItem);
     }
 
     if (newSisoItemsToInsert.length > 0) {
-      const dbRows = newSisoItemsToInsert.map((s) => ({
-        id: s.id,
-        nro_empleado: s.nro_empleado,
-        dni: s.dni,
-        nombre: s.nombre,
-        email: s.email,
-        tipo: s.tipo,
-        carga: s.carga,
-        fecha_desde: s.fecha_desde,
-        fecha_hasta: s.fecha_hasta,
-        dias: s.dias,
-        justifica: s.justifica,
-        cod_licencia: s.cod_licencia ? parseInt(String(s.cod_licencia), 10) : null,
-        fecha_alta: s.fecha_alta,
-        auditor: s.auditor,
-        patologia: s.patologia,
-        fecha_auditoria: s.fecha_auditoria,
-        medico_interviniente: s.medico_interviniente,
-        matricula_medico_interviniente: s.matricula_medico_interviniente,
-        establecimientos_o_sector: s.establecimientos_o_sector,
-      }));
-      (async () => {
-        for (let idx = 0; idx < dbRows.length; idx += 200) {
-          const chunk = dbRows.slice(idx, idx + 200);
-          await supabase.from('siso_licencias').insert(chunk);
-        }
-      })().catch((e) => console.warn('Supabase siso insert notice:', e));
-    }
+      const dbRows = newSisoItemsToInsert.map((s) => {
+        const parsedCod = s.cod_licencia ? parseInt(String(s.cod_licencia), 10) : NaN;
+        return {
+          id: s.id,
+          nro_empleado: s.nro_empleado,
+          dni: s.dni,
+          nombre: s.nombre,
+          email: s.email,
+          tipo: s.tipo,
+          carga: s.carga,
+          fecha_desde: s.fecha_desde,
+          fecha_hasta: s.fecha_hasta,
+          dias: s.dias,
+          justifica: s.justifica,
+          cod_licencia: !isNaN(parsedCod) ? parsedCod : null,
+          fecha_alta: s.fecha_alta,
+          auditor: s.auditor,
+          patologia: s.patologia,
+          fecha_auditoria: s.fecha_auditoria,
+          medico_interviniente: s.medico_interviniente,
+          matricula_medico_interviniente: s.matricula_medico_interviniente,
+          establecimientos_o_sector: s.establecimientos_o_sector,
+        };
+      });
 
-    this.saveSisoLicenses();
-    this.batchSeedCollection('siso_licenses', this.sisoLicenses);
+      for (let idx = 0; idx < dbRows.length; idx += 200) {
+        const chunk = dbRows.slice(idx, idx + 200);
+        const { error: insErr } = await supabase.from('siso_licencias').insert(chunk);
+        if (insErr) {
+          errors.push(`Error insertando lote SISO en Supabase: ${insErr.message}`);
+        }
+      }
+    }
 
     const importRecord: SisoImportHistory = {
       id: importId,
@@ -2757,10 +2955,6 @@ class DataService {
     };
 
     this.sisoImports.unshift(importRecord);
-    this.saveSisoImports();
-    setDoc(doc(db, 'siso_imports', importRecord.id), importRecord).catch((e) =>
-      console.warn('Firestore siso_imports sync failed:', e)
-    );
 
     this.auditLogs.unshift({
       id: 'log-' + Date.now(),
@@ -2769,10 +2963,11 @@ class DataService {
       usuario: usuarioEmail,
       timestamp: new Date().toISOString(),
     });
-    this.saveAuditLogs();
+
+    this.notifyListeners();
 
     return {
-      success: true,
+      success: errors.length === 0,
       detected,
       created,
       updated,
@@ -2781,7 +2976,7 @@ class DataService {
     };
   }
 
-  // LICENSE TYPES CONFIG (Section 9, 21)
+  // LICENSE TYPES CONFIG
   public getLicenseTypes(): Promise<LicenseType[]> {
     return Promise.resolve(this.licenseTypes.filter((lt) => lt.active !== false));
   }
@@ -2790,35 +2985,90 @@ class DataService {
     return this.licenseTypes;
   }
 
-  public updateLicenseType(id: string, updates: Partial<LicenseType>): LicenseType {
+  public async updateLicenseType(id: string, updates: Partial<LicenseType>): Promise<LicenseType> {
     const index = this.licenseTypes.findIndex((lt) => lt.id === id);
     if (index === -1) throw new Error('Tipo de licencia no encontrado.');
 
+    const current = this.licenseTypes[index];
+    const numId = current.tipo_licencia_id || parseInt(id.replace(/\D/g, ''), 10);
+
+    const sbUpdates: Record<string, any> = {};
+    if (updates.code !== undefined) sbUpdates.codigo = updates.code.trim().slice(0, 20);
+    if (updates.name !== undefined) sbUpdates.nombre = updates.name.trim().slice(0, 150);
+    if (updates.category !== undefined) sbUpdates.categoria = String(updates.category).slice(0, 50);
+    if (updates.sinLimite !== undefined) sbUpdates.sin_limite = updates.sinLimite;
+    if (updates.maxDaysPerYear !== undefined || updates.diasTotales !== undefined) {
+      sbUpdates.max_dias_anio = updates.maxDaysPerYear ?? updates.diasTotales ?? null;
+    }
+    if (updates.maxConsecutiveDays !== undefined || updates.diasMensuales !== undefined) {
+      sbUpdates.max_dias_seguidos = updates.maxConsecutiveDays ?? updates.diasMensuales ?? null;
+    }
+    if (updates.requiresJustification !== undefined) {
+      sbUpdates.requiere_justificacion = updates.requiresJustification;
+    }
+    if (updates.requiresObligations !== undefined) {
+      sbUpdates.requiere_obligaciones = updates.requiresObligations;
+    }
+    if (updates.description !== undefined) sbUpdates.descripccion = updates.description;
+    if (updates.active !== undefined) sbUpdates.activo = updates.active;
+
+    if (numId && !isNaN(numId) && Object.keys(sbUpdates).length > 0) {
+      const { data: updatedRow, error } = await supabase
+        .from('tipos_licencias')
+        .update(sbUpdates)
+        .eq('tipo_licencia_id', numId)
+        .select()
+        .single();
+
+      if (error) {
+        throw new Error(`Error al actualizar tipo de licencia en Supabase: ${error.message}`);
+      }
+      if (updatedRow) {
+        this.licenseTypes[index] = this.mapDbLicenseType(updatedRow);
+        this.notifyListeners();
+        return this.licenseTypes[index];
+      }
+    }
+
     this.licenseTypes[index] = {
-      ...this.licenseTypes[index],
+      ...current,
       ...updates,
     };
-    this.saveLicenseTypes();
+    this.notifyListeners();
     return this.licenseTypes[index];
   }
 
-  public createLicenseType(data: Omit<LicenseType, 'id'>): LicenseType {
-    const id = 'art-' + data.code.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const newType: LicenseType = {
-      ...data,
-      id,
-      active: true,
-    };
+  public async createLicenseType(data: Omit<LicenseType, 'id'>): Promise<LicenseType> {
+    const { data: insRow, error } = await this.insertWithIdentityFallback(
+      'tipos_licencias',
+      'tipo_licencia_id',
+      {
+        codigo: data.code.trim().slice(0, 20),
+        nombre: data.name.trim().slice(0, 150),
+        categoria: String(data.category || 'Corta duración').slice(0, 50),
+        sin_limite: Boolean(data.sinLimite),
+        max_dias_anio: data.maxDaysPerYear ?? data.diasTotales ?? null,
+        max_dias_seguidos: data.maxConsecutiveDays ?? data.diasMensuales ?? null,
+        requiere_justificacion: Boolean(data.requiresJustification),
+        requiere_obligaciones: data.requiresObligations !== false,
+        descripccion: data.description || '',
+        activo: data.active !== false,
+      }
+    );
+
+    if (error || !insRow) {
+      throw new Error(error?.message || 'Error al crear tipo de licencia en Supabase.');
+    }
+
+    const newType = this.mapDbLicenseType(insRow);
     this.licenseTypes.push(newType);
-    this.saveLicenseTypes();
+    this.notifyListeners();
     return newType;
   }
 
-  /**
-   * Importa tipos de licencias desde texto CSV con las columnas:
-   * licencia,dias_totales,tipo_dias,activa,dias_mensuales
-   */
-  public importLicenseTypesFromCSV(csvText: string): { total: number; added: number; updated: number } {
+  public async importLicenseTypesFromCSV(
+    csvText: string
+  ): Promise<{ total: number; added: number; updated: number }> {
     const lines = csvText.trim().split(/\r?\n/).filter(Boolean);
     if (lines.length < 2) throw new Error('El archivo CSV no contiene filas de datos.');
 
@@ -2827,10 +3077,10 @@ class DataService {
 
     for (let i = 1; i < lines.length; i++) {
       const line = lines[i];
-      let parts: string[] = [];
+      const parts: string[] = [];
       let cur = '';
       let inQ = false;
-      for (let c of line) {
+      for (const c of line) {
         if (c === '"') inQ = !inQ;
         else if (c === ',' && !inQ) {
           parts.push(cur.trim());
@@ -2846,62 +3096,55 @@ class DataService {
       const dias_totales = parseInt(dias_totales_str, 10) || 1;
       const dias_mensuales = parseInt(dias_mensuales_str || dias_totales_str, 10) || dias_totales;
       const activa = activa_str ? activa_str.toUpperCase() === 'SI' : true;
-      const tipoDiasNorm: 'habiles' | 'continuos' = tipo_dias && tipo_dias.toLowerCase().includes('contin') ? 'continuos' : 'habiles';
+      const tipoDiasNorm: 'habiles' | 'continuos' =
+        tipo_dias && tipo_dias.toLowerCase().includes('contin') ? 'continuos' : 'habiles';
 
-      const existingIndex = this.licenseTypes.findIndex(
+      const existing = this.licenseTypes.find(
         (lt) => lt.name.trim().toLowerCase() === licencia.trim().toLowerCase()
       );
 
       const desc = `Régimen: ${dias_totales} días ${tipoDiasNorm} anuales (máx. ${dias_mensuales} días por mes).`;
 
-      if (existingIndex !== -1) {
-        this.licenseTypes[existingIndex] = {
-          ...this.licenseTypes[existingIndex],
-          name: licencia,
-          diasTotales: dias_totales,
-          diasMensuales: dias_mensuales,
-          maxDaysPerYear: dias_totales,
-          maxConsecutiveDays: dias_mensuales,
-          tipoDias: tipoDiasNorm,
-          active: activa,
-          description: desc,
-        };
+      if (existing?.tipo_licencia_id) {
+        await supabase
+          .from('tipos_licencias')
+          .update({
+            nombre: licencia.trim().slice(0, 150),
+            max_dias_anio: dias_totales,
+            max_dias_seguidos: dias_mensuales,
+            activo: activa,
+            descripccion: desc,
+          })
+          .eq('tipo_licencia_id', existing.tipo_licencia_id);
         updated++;
       } else {
-        const id = 'lic-csv-' + (this.licenseTypes.length + 1);
-        const code = 'LIC-' + (this.licenseTypes.length + 1);
-        this.licenseTypes.push({
-          id,
-          code,
-          name: licencia,
-          category: dias_totales >= 30 ? 'Larga duración' : 'Corta duración',
-          sinLimite: dias_totales >= 365,
-          maxDaysPerYear: dias_totales,
-          diasTotales: dias_totales,
-          diasMensuales: dias_mensuales,
-          tipoDias: tipoDiasNorm,
-          maxConsecutiveDays: dias_mensuales,
-          requiresJustification: true,
-          requiresObligations: dias_totales > 5,
-          description: desc,
-          active: activa,
-          csvIndex: this.licenseTypes.length + 1,
+        const code = 'LIC-' + (this.licenseTypes.length + added + 1);
+        await this.insertWithIdentityFallback('tipos_licencias', 'tipo_licencia_id', {
+          codigo: code,
+          nombre: licencia.trim().slice(0, 150),
+          categoria: dias_totales >= 30 ? 'Larga duración' : 'Corta duración',
+          sin_limite: dias_totales >= 365,
+          max_dias_anio: dias_totales,
+          max_dias_seguidos: dias_mensuales,
+          requiere_justificacion: true,
+          requiere_obligaciones: dias_totales > 5,
+          descripccion: desc,
+          activo: activa,
         });
         added++;
       }
     }
 
-    this.saveLicenseTypes();
+    await this.refreshFromSupabase();
     return { total: lines.length - 1, added, updated };
   }
 
-  public resetLicenseTypesToCSVDefault(): LicenseType[] {
-    this.licenseTypes = [...INITIAL_LICENSE_TYPES];
-    this.saveLicenseTypes();
+  public async resetLicenseTypesToCSVDefault(): Promise<LicenseType[]> {
+    await this.refreshFromSupabase();
     return this.licenseTypes;
   }
 
-  // WEEKLY ABSENCES & LONG LICENSES (Section 33 - 39)
+  // WEEKLY ABSENCES & LONG LICENSES
   public getWeeklyAbsences(monday: Date): WeeklyAbsenceRow[] {
     const mondayStr = formatYMD(monday);
     const friDate = new Date(monday);
@@ -2918,7 +3161,6 @@ class DataService {
 
     const effectiveStatuses: LicenseStatus[] = ['Autorizada', 'Justificada', 'Completada', 'Descuento'];
 
-    // 1. Solicitudes
     const activeRequests = this.requests.filter((r) => {
       if (!effectiveStatuses.includes(r.status)) return false;
       return !(r.dateTo < mondayStr || r.dateFrom > fridayStr);
@@ -2927,7 +3169,6 @@ class DataService {
     const rows: WeeklyAbsenceRow[] = [];
     const seenKeys = new Set<string>();
 
-    // Solicitudes del colegio
     for (const r of activeRequests) {
       const dedupKey = `${r.employeeNumber}_${r.dateFrom}_${r.dateTo}`;
       if (seenKeys.has(dedupKey)) continue;
@@ -2960,7 +3201,6 @@ class DataService {
   public getLongLicenses(): LongLicenseItem[] {
     const items: LongLicenseItem[] = [];
 
-    // From requests
     for (const r of this.requests) {
       if (r.status === 'Eliminada' || r.status === 'Rechazada') continue;
       const totalDays = calculateDaysBetween(r.dateFrom, r.dateTo);
@@ -2992,19 +3232,18 @@ class DataService {
     return items;
   }
 
-  // Dashboard Metrics
   public getDashboardMetrics() {
     const today = formatYMD(new Date());
     const agents = this.getAgents();
     const activeAgents = agents.filter((a) => a.activo).length;
     const activeCargos = this.cargos.filter((c) => c.activo).length;
-    
     const pendingRequests = this.requests.filter((r) => r.status === 'Pendiente').length;
-
-    // Licencias vigentes hoy de solicitudes internas del colegio
-    const activeLicensesToday = 
-      this.requests.filter((r) => ['Autorizada', 'Justificada', 'Completada', 'Descuento'].includes(r.status) && r.dateFrom <= today && r.dateTo >= today).length;
-
+    const activeLicensesToday = this.requests.filter(
+      (r) =>
+        ['Autorizada', 'Justificada', 'Completada', 'Descuento'].includes(r.status) &&
+        r.dateFrom <= today &&
+        r.dateTo >= today
+    ).length;
     const longLicensesCount = this.getLongLicenses().length;
 
     return {

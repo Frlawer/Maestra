@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Network, 
   Calendar, 
@@ -84,9 +84,19 @@ export const ArticulacionesModule: React.FC = () => {
   const [selectedAreaId, setSelectedAreaId] = useState<string>('TODOS');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const cargos = useMemo(() => dataService.getCargos(), []);
-  const puestos = useMemo(() => dataService.getPuestos(), []);
-  const agentes = useMemo(() => dataService.getAgents(), []);
+  const [cargos, setCargos] = useState<Cargo[]>(() => dataService.getCargos());
+  const [puestos, setPuestos] = useState<Puesto[]>(() => dataService.getPuestos());
+  const [agentes, setAgentes] = useState<Agent[]>(() => dataService.getAgents());
+
+  useEffect(() => {
+    const sync = () => {
+      setCargos(dataService.getCargos());
+      setPuestos(dataService.getPuestos());
+      setAgentes(dataService.getAgents());
+    };
+    sync();
+    return dataService.subscribe(sync);
+  }, []);
 
   // Map cargoId to docente assigned
   const puestosMap = useMemo(() => {

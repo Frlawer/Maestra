@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Users2, 
   Search, 
@@ -49,6 +49,11 @@ export const AsambleaModule: React.FC = () => {
   const [filterCurso, setFilterCurso] = useState<string>('TODOS');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedItemDetail, setSelectedItemDetail] = useState<AsambleaItem | null>(null);
+  const [syncVersion, setSyncVersion] = useState(0);
+
+  useEffect(() => {
+    return dataService.subscribe(() => setSyncVersion((v) => v + 1));
+  }, []);
 
   // Recolectar datos en tiempo real de cargos, puestos y licencias
   const asambleaItems = useMemo<AsambleaItem[]>(() => {
@@ -206,7 +211,7 @@ export const AsambleaModule: React.FC = () => {
       }
       return a.cargo_id - b.cargo_id;
     });
-  }, []);
+  }, [syncVersion]);
 
   // Filtered Items
   const filteredItems = useMemo(() => {

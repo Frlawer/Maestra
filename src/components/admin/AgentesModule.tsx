@@ -114,7 +114,7 @@ export const AgentesModule: React.FC = () => {
     setShowCreateModal(true);
   };
 
-  const handleSaveForm = (e: React.FormEvent) => {
+  const handleSaveForm = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
 
@@ -133,7 +133,7 @@ export const AgentesModule: React.FC = () => {
 
     try {
       if (editingAgent) {
-        dataService.updateAgent(editingAgent.id, {
+        await dataService.updateAgent(editingAgent.id, {
           apellidos: formData.apellidos,
           nombres: formData.nombres,
           employeeNumber: formData.employeeNumber,
@@ -144,7 +144,7 @@ export const AgentesModule: React.FC = () => {
           lugarNacimiento: formData.lugarNacimiento,
         });
       } else {
-        dataService.createAgent({
+        await dataService.createAgent({
           apellidos: formData.apellidos,
           nombres: formData.nombres,
           employeeNumber: formData.employeeNumber,
@@ -165,14 +165,18 @@ export const AgentesModule: React.FC = () => {
   };
 
   // Section 4 & 21: "Desactivar agente sin eliminar su historial"
-  const handleToggleActive = (agent: Agent) => {
+  const handleToggleActive = async (agent: Agent) => {
     const actionVerb = agent.activo ? 'desactivar' : 'activar';
     const confirmMsg = `¿Está seguro de que desea ${actionVerb} al agente ${agent.fullName}? Su historial laboral y solicitudes permanecerán intactos en el sistema.`;
     if (window.confirm(confirmMsg)) {
-      dataService.toggleAgentActive(agent.id, !agent.activo);
-      refreshAgents();
-      if (viewingAgent?.id === agent.id) {
-        setViewingAgent({ ...agent, activo: !agent.activo });
+      try {
+        await dataService.toggleAgentActive(agent.id, !agent.activo);
+        refreshAgents();
+        if (viewingAgent?.id === agent.id) {
+          setViewingAgent({ ...agent, activo: !agent.activo });
+        }
+      } catch (err: any) {
+        alert(err.message || 'Error al actualizar el estado del agente.');
       }
     }
   };

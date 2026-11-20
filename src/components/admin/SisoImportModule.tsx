@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   FileSpreadsheet, 
   Upload, 
@@ -64,6 +64,14 @@ export const SisoImportModule: React.FC = () => {
     setSisoLicenses([...dataService.getSisoLicenses()]);
     setImportHistory([...dataService.getSisoImports()]);
   };
+
+  useEffect(() => {
+    refreshData();
+    if (dataService.getSisoLicenses().length === 0) {
+      dataService.refreshSisoFromSupabase();
+    }
+    return dataService.subscribe(refreshData);
+  }, []);
 
   // Section 22: Template download with exact required original headers separated by semicolon
   const handleDownloadTemplate = () => {
@@ -162,13 +170,13 @@ export const SisoImportModule: React.FC = () => {
   };
 
   // Execute Import
-  const handleExecuteImport = () => {
+  const handleExecuteImport = async () => {
     if (!rawCsvText || !fileName) return;
 
     setIsImporting(true);
 
     try {
-      const res = dataService.importSisoCsv(
+      const res = await dataService.importSisoCsv(
         rawCsvText,
         fileName,
         currentUser?.email || 'admin@cpem.edu.ar'

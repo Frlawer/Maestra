@@ -97,6 +97,7 @@ export const SolicitudesAdminModule: React.FC<SolicitudesAdminModuleProps> = ({
 
   const refreshRequests = () => {
     setRequests(dataService.getRequests());
+    setLicenseTypes(dataService.getAllLicenseTypes());
   };
 
   useEffect(() => {

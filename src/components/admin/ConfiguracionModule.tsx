@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { 
   Settings, 
   Layers, 
@@ -76,6 +76,14 @@ export const ConfiguracionModule: React.FC = () => {
     setTypes([...dataService.getAllLicenseTypes()]);
   };
 
+  useEffect(() => {
+    refreshTypes();
+    const unsub = dataService.subscribe(() => {
+      refreshTypes();
+    });
+    return unsub;
+  }, []);
+
   const handleOpenCreate = () => {
     setEditingType(null);
     setFormData({
@@ -122,7 +130,7 @@ export const ConfiguracionModule: React.FC = () => {
     setShowModal(true);
   };
 
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.code.trim() || !formData.name.trim()) {
       alert('El código y nombre del tipo de licencia son requeridos.');
@@ -133,41 +141,47 @@ export const ConfiguracionModule: React.FC = () => {
       ...formData,
       maxDaysPerYear: formData.diasTotales,
       maxConsecutiveDays: formData.diasMensuales,
-      description: formData.description.trim() || 
-        `Régimen: ${formData.diasTotales} días ${formData.tipoDias} anuales (máx. ${formData.diasMensuales} días por mes).`
+      description:
+        formData.description.trim() ||
+        `Régimen: ${formData.diasTotales} días ${formData.tipoDias} anuales (máx. ${formData.diasMensuales} días por mes).`,
     };
 
-    if (editingType) {
-      dataService.updateLicenseType(editingType.id, payload);
-    } else {
-      dataService.createLicenseType({ ...payload, active: true });
-    }
-
-    setShowModal(false);
-    refreshTypes();
-  };
-
-  const handleToggleActive = (t: LicenseType) => {
-    dataService.updateLicenseType(t.id, { active: !t.active });
-    refreshTypes();
-  };
-
-  const handleResetToCsv = () => {
-    if (window.confirm('¿Desea restablecer todas las licencias a los 28 tipos originales del CSV oficial?')) {
-      dataService.resetLicenseTypesToCSVDefault();
+    try {
+      if (editingType) {
+        await dataService.updateLicenseType(editingType.id, payload);
+      } else {
+        await dataService.createLicenseType({ ...payload, active: true });
+      }
+      setShowModal(false);
       refreshTypes();
+    } catch (err: any) {
+      alert(err.message || 'Error al guardar tipo de licencia en Supabase.');
     }
   };
 
-  const handleProcessCsvImport = () => {
+  const handleToggleActive = async (t: LicenseType) => {
+    try {
+      await dataService.updateLicenseType(t.id, { active: !t.active });
+      refreshTypes();
+    } catch (err: any) {
+      alert(err.message || 'Error al actualizar estado en Supabase.');
+    }
+  };
+
+  const handleResetToCsv = async () => {
+    await dataService.resetLicenseTypesToCSVDefault();
+    refreshTypes();
+  };
+
+  const handleProcessCsvImport = async () => {
     if (!csvInput.trim()) {
       setCsvMsg({ text: 'Por favor pegue o cargue las líneas del CSV.', error: true });
       return;
     }
     try {
-      const res = dataService.importLicenseTypesFromCSV(csvInput);
-      setCsvMsg({ 
-        text: `¡Importación exitosa! Total procesadas: ${res.total} (Agregadas: ${res.added}, Actualizadas: ${res.updated})` 
+      const res = await dataService.importLicenseTypesFromCSV(csvInput);
+      setCsvMsg({
+        text: `¡Importación exitosa! Total procesadas: ${res.total} (Agregadas: ${res.added}, Actualizadas: ${res.updated})`,
       });
       refreshTypes();
       setTimeout(() => {
@@ -227,10 +241,10 @@ export const ConfiguracionModule: React.FC = () => {
           <button
             onClick={handleResetToCsv}
             className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-300 hover:bg-slate-50 text-slate-700 font-semibold text-xs shadow-xs transition-all"
-            title="Restablece al catálogo original de 28 licencias del CSV"
+            title="Sincronizar catálogo desde Supabase"
           >
             <RotateCcw className="w-4 h-4 text-amber-600" />
-            <span>Restablecer CSV Oficial</span>
+            <span>Sincronizar BD</span>
           </button>
 
           <button
