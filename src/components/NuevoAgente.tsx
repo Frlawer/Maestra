@@ -311,7 +311,7 @@ export const NuevoAgente: React.FC<NuevoAgenteProps> = ({
                   type="tel"
                   required
                   maxLength={20}
-                  placeholder="Ej: 299-4552190"
+                  placeholder="Ej: 2994552190"
                   value={formData.telefono}
                   onChange={(e) => setFormData({ ...formData, telefono: e.target.value })}
                   className="w-full pl-9 pr-3.5 py-2.5 rounded-xl border border-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 transition-all"
