@@ -512,7 +512,7 @@ export const CargosPuestosModule: React.FC = () => {
                           ? 'bg-blue-100/90 ring-2 ring-inset ring-blue-500 shadow-md'
                           : draggedCargoId === cargo.id
                           ? 'opacity-40 bg-slate-100'
-                          : 'hover:bg-blue-50/40'
+                          : 'hover:bg-blue-50/40 border-slate-200'
                       }`}
                     >
                       {/* Column 1: Order only (6 dots drag handle) */}
